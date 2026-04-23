@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { useSession } from 'next-auth/react';
+import { Trash2 } from 'lucide-react';
 
 interface Worker {
   id: string;
@@ -232,7 +233,7 @@ export function WorkersView() {
                       <div className="flex gap-1 justify-center">
                         <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); handleEdit(w); }}>✏️</Button>
                         {w.isActive && (
-                          <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); handleDeactivate(w.id); }} className="text-red-600">Уволить</Button>
+                          <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); handleDeactivate(w.id); }} className="text-red-600"><Trash2 className="h-4 w-4" /></Button>
                         )}
                       </div>
                     </td>
@@ -261,6 +262,7 @@ export function WorkersView() {
             className="cursor-pointer active:bg-slate-50 transition-colors"
           >
             <CardContent className="p-4 space-y-3">
+              {/* Header: ФИО + Статус */}
               <div className="flex items-start justify-between gap-2">
                 <div className="font-medium text-base leading-tight">
                   {w.lastName} {w.firstName} {w.patronymic}
@@ -269,6 +271,8 @@ export function WorkersView() {
                   {w.isActive ? 'Работает' : 'Уволен'}
                 </Badge>
               </div>
+
+              {/* Info chips */}
               <div className="flex flex-wrap gap-2">
                 {w.position && w.position !== 'worker' ? (
                   <Badge className={w.position === 'master' ? 'bg-amber-600' : w.position === 'master_pu' ? 'bg-blue-600' : 'bg-indigo-600'}>
@@ -281,21 +285,27 @@ export function WorkersView() {
                   Смена {w.shiftNumber}
                 </Badge>
               </div>
+
+              {/* Equipment */}
               <div className="text-sm text-gray-600">
                 <span className="text-gray-400">Оборудование: </span>
                 {w.equipment?.name || '—'}
               </div>
+
+              {/* Professions */}
               {w.professions.length > 0 && (
                 <div className="text-sm text-gray-500">
                   <span className="text-gray-400">Доп. профессии: </span>
                   {w.professions.map(p => p.professionName).join(', ')}
                 </div>
               )}
+
+              {/* Actions */}
               {canEdit && (
                 <div className="flex gap-2 pt-1">
                   <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); handleEdit(w); }}>✏️ Редактировать</Button>
                   {w.isActive && (
-                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); handleDeactivate(w.id); }} className="text-red-600">Уволить</Button>
+                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); handleDeactivate(w.id); }} className="text-red-600"><Trash2 className="h-4 w-4" /></Button>
                   )}
                 </div>
               )}

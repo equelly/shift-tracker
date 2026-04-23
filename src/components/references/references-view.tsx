@@ -6,9 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useSession } from 'next-auth/react';
-import { useToast } from '@/hooks/use-toast';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface Grade {
   number: number;
@@ -23,34 +22,28 @@ interface Holiday {
   name: string;
 }
 
-interface UserItem {
-  id: string;
-  email: string;
-  name: string;
-  role: string;
-  workerId: string | null;
-  mustChangePassword: boolean;
-  worker: { id: string; lastName: string; firstName: string; patronymic: string } | null;
+interface ShiftPhaseInfo {
+  shiftNumber: number;
+  phase: string;
+  label: string;
+  shortLabel: string;
 }
 
-interface Worker {
-  id: string;
-  lastName: string;
-  firstName: string;
-  patronymic: string;
+interface ScheduleConfig {
+  startDate: string;
+  today: string;
+  phases: ShiftPhaseInfo[];
 }
 
-const ROLE_MAP: Record<string, { label: string; color: string }> = {
-  admin:     { label: 'Администратор', color: 'bg-purple-100 text-purple-800' },
-  master:    { label: 'Мастер',        color: 'bg-blue-100 text-blue-800' },
-  brigadier: { label: 'Бригадир',      color: 'bg-amber-100 text-amber-800' },
-  worker:    { label: 'Работник',       color: 'bg-gray-100 text-gray-800' },
+const PHASE_COLORS: Record<string, string> = {
+  day: 'bg-green-100 text-green-800 border-green-300',
+  night: 'bg-blue-100 text-blue-800 border-blue-300',
+  rest: 'bg-gray-100 text-gray-600 border-gray-300',
+  off: 'bg-gray-50 text-gray-400 border-gray-200',
 };
 
 export function ReferencesView() {
   const { data: session } = useSession();
-  const { toast } = useToast();
-
   const [grades, setGrades] = useState<Grade[]>([]);
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [editingGrade, setEditingGrade] = useState<number | null>(null);
@@ -58,14 +51,9 @@ export function ReferencesView() {
   const [showAddHoliday, setShowAddHoliday] = useState(false);
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '' });
 
-  // Пользователи
-  const [users, setUsers] = useState<UserItem[]>([]);
-  const [workers, setWorkers] = useState<Worker[]>([]);
-  const [showUserDialog, setShowUserDialog] = useState(false);
-  const [editingUser, setEditingUser] = useState<UserItem | null>(null);
-  const [userForm, setUserForm] = useState({ email: '', name: '', role: 'worker', workerId: '' });
-  const [tempPassword, setTempPassword] = useState<string | null>(null);
-  const [savingUser, setSavingUser] = useState(false);
+  // Schedule config state
+  const [scheduleConfig, setScheduleConfig] = useState<ScheduleConfig | null>(null);
+  const [shifting, setShifting] = useState(false);
 
   const fetchGrades = useCallback(async () => {
     const res = await fetch('/api/grades');
@@ -79,33 +67,30 @@ export function ReferencesView() {
     setHolidays(data);
   }, []);
 
-  const fetchUsers = useCallback(async () => {
-    try {
-      const res = await fetch('/api/users');
-      if (res.ok) setUsers(await res.json());
-    } catch {}
-  }, []);
-
-  const fetchWorkers = useCallback(async () => {
-    try {
-      const res = await fetch('/api/workers');
-      if (res.ok) setWorkers(await res.json());
-    } catch {}
+  const fetchScheduleConfig = useCallback(async () => {
+    const res = await fetch('/api/schedule-config');
+    const data = await res.json();
+    setScheduleConfig(data);
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      fetch('/api/grades').then(r => r.json()),
-      fetch('/api/holidays?year=2026').then(r => r.json()),
-      fetch('/api/users').then(r => r.ok ? r.json() : []).catch(() => []),
-    ]).then(([g, h, u]) => {
-      if (!cancelled) {
-        setGrades(g);
-        setHolidays(h);
-        setUsers(u);
-      }
-    }).catch(() => {});
+
+    fetch('/api/grades')
+      .then(r => { if (!r.ok) throw new Error(`grades ${r.status}`); return r.json(); })
+      .then(data => { if (!cancelled) setGrades(data); })
+      .catch(e => { console.error('grades fetch error:', e); });
+
+    fetch('/api/holidays?year=2026')
+      .then(r => { if (!r.ok) throw new Error(`holidays ${r.status}`); return r.json(); })
+      .then(data => { if (!cancelled) setHolidays(data); })
+      .catch(e => { console.error('holidays fetch error:', e); });
+
+    fetch('/api/schedule-config')
+      .then(r => { if (!r.ok) throw new Error(`schedule-config ${r.status}`); return r.json(); })
+      .then(data => { if (!cancelled && data.phases) setScheduleConfig(data); })
+      .catch(e => { console.error('schedule-config fetch error:', e); });
+
     return () => { cancelled = true; };
   }, []);
 
@@ -145,108 +130,101 @@ export function ReferencesView() {
     fetchHolidays();
   };
 
-  // --- Пользователи ---
-  const openCreateUser = () => {
-    setEditingUser(null);
-    setUserForm({ email: '', name: '', role: 'worker', workerId: '' });
-    setTempPassword(null);
-    fetchWorkers();
-    setShowUserDialog(true);
-  };
-
-  const openEditUser = (user: UserItem) => {
-    setEditingUser(user);
-    setUserForm({
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      workerId: user.workerId || '',
-    });
-    setTempPassword(null);
-    fetchWorkers();
-    setShowUserDialog(true);
-  };
-
-  const handleSaveUser = async () => {
-    setSavingUser(true);
+  // Shift the start date by offset days
+  const handleShift = async (offset: number) => {
+    if (!scheduleConfig || shifting) return;
+    setShifting(true);
     try {
-      if (editingUser) {
-        const res = await fetch(`/api/users/${editingUser.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(userForm),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || 'Ошибка');
-        }
-        toast({ title: 'Готово', description: 'Пользователь обновлён' });
-        setShowUserDialog(false);
-      } else {
-        const res = await fetch('/api/users', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(userForm),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || 'Ошибка');
-        }
-        const data = await res.json();
-        if (data.tempPassword) {
-          setTempPassword(data.tempPassword);
-        }
-        toast({ title: 'Готово', description: 'Пользователь создан' });
-      }
-      fetchUsers();
-    } catch (e: any) {
-      toast({ title: 'Ошибка', description: e.message, variant: 'destructive' });
-    } finally {
-      setSavingUser(false);
-    }
-  };
+      const current = new Date(scheduleConfig.startDate + 'T00:00:00');
+        current.setDate(current.getDate() + offset);
+        const y = current.getFullYear();
+        const m = String(current.getMonth() + 1).padStart(2, '0');
+        const d = String(current.getDate()).padStart(2, '0');
+        const newDate = `${y}-${m}-${d}`;
 
-  const handleDeleteUser = async (userId: string) => {
-    if (!confirm('Удалить этого пользователя?')) return;
-    try {
-      const res = await fetch(`/api/users/${userId}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Ошибка');
-      }
-      toast({ title: 'Удалено', description: 'Пользователь удалён' });
-      fetchUsers();
-    } catch (e: any) {
-      toast({ title: 'Ошибка', description: e.message, variant: 'destructive' });
-    }
-  };
-
-  const handleResetPassword = async (userId: string, userName: string) => {
-    if (!confirm(`Сбросить пароль для ${userName}? Будет создан временный пароль.`)) return;
-    try {
-      const res = await fetch('/api/users/reset-password', {
-        method: 'POST',
+      const res = await fetch('/api/schedule-config', {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId }),
+        body: JSON.stringify({ startDate: newDate }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Ошибка');
-      }
       const data = await res.json();
-      toast({
-        title: 'Пароль сброшен',
-        description: `Временный пароль: ${data.tempPassword}`,
-        duration: 15000,
-      });
-      fetchUsers();
-    } catch (e: any) {
-      toast({ title: 'Ошибка', description: e.message, variant: 'destructive' });
+      setScheduleConfig(data);
+    } finally {
+      setShifting(false);
     }
+  };
+
+  const formatRussianDate = (dateStr: string) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const date = new Date(y, m - 1, d);
+    const days = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+    const months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+                    'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+    return `${d} ${months[m - 1]} ${y} (${days[date.getDay()]})`;
   };
 
   return (
     <div className="space-y-6">
+      {/* Shift Phasing */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Фазировка смен</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {scheduleConfig && (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">
+                Сегодня: <span className="font-semibold">{formatRussianDate(scheduleConfig.today)}</span>
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {scheduleConfig.phases.map(p => (
+                  <div
+                    key={p.shiftNumber}
+                    className={`rounded-lg border-2 p-4 text-center ${PHASE_COLORS[p.phase] || 'bg-gray-50'}`}
+                  >
+                    <div className="text-lg font-bold">Смена {p.shiftNumber}</div>
+                    <div className="text-2xl font-black mt-1">{p.shortLabel}</div>
+                    <div className="text-xs mt-1">{p.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center justify-between pt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleShift(-1)}
+                  disabled={shifting}
+                >
+                  <ChevronLeft className="h-4 w-4 mr-1" />
+                  Сдвинуть назад
+                </Button>
+
+                <div className="text-xs text-gray-500 text-center">
+                  Дата отсчёта: <span className="font-mono">{scheduleConfig.startDate}</span>
+                  <br />
+                  <span className="text-[10px]">Сдвигайте дату, пока фазы смен не совпадут с реальностью</span>
+                </div>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleShift(1)}
+                  disabled={shifting}
+                >
+                  Сдвинуть вперёд
+                  <ChevronRight className="h-4 w-4 ml-1" />
+                </Button>
+              </div>
+            </div>
+          )}
+          {!scheduleConfig && (
+            <p className="text-gray-500 text-sm">Загрузка...</p>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Grades */}
       <Card>
         <CardHeader>
@@ -301,67 +279,6 @@ export function ReferencesView() {
         </CardContent>
       </Card>
 
-      {/* Users */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>Пользователи</CardTitle>
-            <Button onClick={openCreateUser} className="bg-emerald-600 hover:bg-emerald-700">+ Добавить</Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {users.length === 0 ? (
-            <p className="text-gray-500 text-center py-4">Пользователей пока нет</p>
-          ) : (
-            <div className="overflow-x-auto -mx-6 px-6 sm:mx-0 sm:px-0">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-slate-100">
-                    <th className="px-3 py-2 text-left font-medium">ФИО</th>
-                    <th className="px-3 py-2 text-left font-medium">Email</th>
-                    <th className="px-3 py-2 text-center font-medium">Роль</th>
-                    <th className="px-3 py-2 text-left font-medium">Работник</th>
-                    <th className="px-3 py-2 text-center font-medium">Статус</th>
-                    <th className="px-3 py-2 text-center font-medium">Действия</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.map(u => {
-                    const roleInfo = ROLE_MAP[u.role] || ROLE_MAP.worker;
-                    return (
-                      <tr key={u.id} className="border-b hover:bg-gray-50">
-                        <td className="px-3 py-2 font-medium">{u.name}</td>
-                        <td className="px-3 py-2 text-gray-600">{u.email}</td>
-                        <td className="px-3 py-2 text-center">
-                          <Badge className={roleInfo.color}>{roleInfo.label}</Badge>
-                        </td>
-                        <td className="px-3 py-2 text-sm text-gray-600">
-                          {u.worker ? `${u.worker.lastName} ${u.worker.firstName[0]}.${u.worker.patronymic[0]}.` : '—'}
-                        </td>
-                        <td className="px-3 py-2 text-center">
-                          {u.mustChangePassword && (
-                            <Badge className="bg-amber-100 text-amber-800 text-xs">Сменить пароль</Badge>
-                          )}
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center justify-center gap-1 flex-wrap">
-                            <Button variant="ghost" size="sm" onClick={() => openEditUser(u)} className="text-xs h-7">✏️</Button>
-                            <Button variant="ghost" size="sm" onClick={() => handleResetPassword(u.id, u.name)} className="text-xs h-7" title="Сбросить пароль">🔑</Button>
-                            {u.id !== (session?.user as any)?.id && (
-                              <Button variant="ghost" size="sm" onClick={() => handleDeleteUser(u.id)} className="text-xs h-7 text-red-400 hover:text-red-600">🗑</Button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
       {/* Holidays */}
       <Card>
         <CardHeader>
@@ -407,99 +324,6 @@ export function ReferencesView() {
               Добавить
             </Button>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* User Create/Edit Dialog */}
-      <Dialog open={showUserDialog} onOpenChange={(open) => { if (!tempPassword) setShowUserDialog(open); }}>
-        <DialogContent className="w-[calc(100%-2rem)] sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>{editingUser ? 'Редактировать пользователя' : 'Новый пользователь'}</DialogTitle>
-          </DialogHeader>
-
-          {tempPassword ? (
-            <div className="space-y-4 py-4">
-              <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
-                <p className="font-medium text-green-800 mb-2">Пользователь создан!</p>
-                <p className="text-sm text-green-700 mb-3">Передайте временный пароль пользователю. При первом входе система попросит его сменить.</p>
-                <div className="p-3 bg-white border-2 border-dashed border-green-400 rounded-lg text-center">
-                  <p className="text-xs text-gray-500 mb-1">Временный пароль:</p>
-                  <p className="text-2xl font-mono font-bold text-green-800 tracking-wider">{tempPassword}</p>
-                </div>
-              </div>
-              <Button onClick={() => { setShowUserDialog(false); setTempPassword(null); }} className="w-full bg-emerald-600 hover:bg-emerald-700">
-                Понятно
-              </Button>
-            </div>
-          ) : (
-            <>
-              <div className="space-y-4 py-2">
-                <div>
-                  <label className="text-sm font-medium mb-1 block">Email</label>
-                  <Input
-                    type="email"
-                    value={userForm.email}
-                    onChange={e => setUserForm({...userForm, email: e.target.value})}
-                    placeholder="user@factory.ru"
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium mb-1 block">ФИО</label>
-                  <Input
-                    value={userForm.name}
-                    onChange={e => setUserForm({...userForm, name: e.target.value})}
-                    placeholder="Иванов Иван Иванович"
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium mb-1 block">Роль</label>
-                  <Select value={userForm.role} onValueChange={v => setUserForm({...userForm, role: v})}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="admin">Администратор</SelectItem>
-                      <SelectItem value="master">Мастер</SelectItem>
-                      <SelectItem value="brigadier">Бригадир</SelectItem>
-                      <SelectItem value="worker">Работник</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-sm font-medium mb-1 block">Привязанный работник (необязательно)</label>
-                  <Select value={userForm.workerId} onValueChange={v => setUserForm({...userForm, workerId: v === '__none' ? '' : v})}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Не привязан" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none">Не привязан</SelectItem>
-                      {workers.map(w => (
-                        <SelectItem key={w.id} value={w.id}>
-                          {w.lastName} {w.firstName[0]}.{w.patronymic[0]}.
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                {!editingUser && (
-                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700">
-                    <p className="font-medium">ℹ️ Пароль будет сгенерирован автоматически</p>
-                    <p className="mt-1">Временный пароль отобразится после создания. Пользователь должен будет сменить его при первом входе.</p>
-                  </div>
-                )}
-              </div>
-              <DialogFooter className="flex-col sm:flex-row gap-2">
-                <Button variant="outline" onClick={() => setShowUserDialog(false)} className="w-full sm:w-auto">Отмена</Button>
-                <Button
-                  onClick={handleSaveUser}
-                  className="bg-emerald-600 hover:bg-emerald-700 w-full sm:w-auto"
-                  disabled={!userForm.email || !userForm.name || savingUser}
-                >
-                  {savingUser ? 'Сохранение...' : editingUser ? 'Сохранить' : 'Создать'}
-                </Button>
-              </DialogFooter>
-            </>
-          )}
         </DialogContent>
       </Dialog>
     </div>
