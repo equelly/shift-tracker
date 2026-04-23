@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Учёт рабочего времени</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f8fafc; min-height: 100vh; }
+    
+    /* Header */
+    .header { background: #0f172a; color: #fff; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 8px rgba(0,0,0,.2); }
+    .header-logo { display: flex; align-items: center; gap: 12px; }
+    .header-logo .icon { width: 40px; height: 40px; background: #059669; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+    .header h1 { font-size: 18px; font-weight: 700; }
+    .header p { font-size: 11px; color: #94a3b8; }
+    .header-user { text-align: right; }
+    .header-user .name { font-size: 14px; font-weight: 500; }
+    .header-user .role { font-size: 11px; color: #94a3b8; }
+    .btn-logout { background: #334155; border: 1px solid #475569; color: #fff; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; margin-left: 12px; }
+    .btn-logout:hover { background: #475569; }
+
+    /* Tabs */
+    .tabs { background: #fff; border-bottom: 1px solid #e2e8f0; padding: 8px 16px; display: flex; gap: 4px; overflow-x: auto; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+    .tab { padding: 8px 16px; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; white-space: nowrap; border: none; background: none; color: #475569; transition: all .15s; }
+    .tab:hover { background: #f1f5f9; }
+    .tab.active { background: #059669; color: #fff; box-shadow: 0 2px 4px rgba(5,150,105,.3); }
+
+    /* Main */
+    .main { max-width: 1600px; margin: 0 auto; padding: 24px 16px; }
+
+    /* Cards */
+    .card { background: #fff; border-radius: 12px; border: 1px solid #e2e8f0; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+    .card h3 { font-size: 16px; font-weight: 600; color: #0f172a; margin-bottom: 12px; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .stat-card { background: #fff; border-radius: 12px; border: 1px solid #e2e8f0; padding: 16px; }
+    .stat-card .label { font-size: 13px; color: #64748b; }
+    .stat-card .value { font-size: 28px; font-weight: 700; color: #0f172a; }
+
+    /* Tables */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { background: #f8fafc; text-align: left; padding: 8px 12px; font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid #e2e8f0; }
+    td { padding: 8px 12px; border-bottom: 1px solid #f1f5f9; }
+    tr:hover td { background: #f8fafc; }
+
+    /* Buttons */
+    .btn { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; transition: all .15s; }
+    .btn-primary { background: #059669; color: #fff; }
+    .btn-primary:hover { background: #047857; }
+    .btn-secondary { background: #e2e8f0; color: #334155; }
+    .btn-secondary:hover { background: #cbd5e1; }
+    .btn-danger { background: #ef4444; color: #fff; font-size: 12px; padding: 4px 10px; }
+    .btn-sm { font-size: 12px; padding: 4px 10px; }
+    .btn-link { background: none; border: none; color: #059669; cursor: pointer; font-size: 12px; padding: 2px 4px; }
+    .btn-link:hover { color: #047857; text-decoration: underline; }
+
+    /* Forms */
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-group label { font-size: 13px; font-weight: 500; color: #334155; }
+    input, select { border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; transition: border-color .15s; }
+    input:focus, select:focus { border-color: #059669; box-shadow: 0 0 0 2px rgba(5,150,105,.15); }
+    .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+    .badge-green { background: #d1fae5; color: #065f46; }
+    .badge-red { background: #fee2e2; color: #991b1b; }
+    .badge-yellow { background: #fef3c7; color: #92400e; }
+    .badge-blue { background: #dbeafe; color: #1e40af; }
+    .badge-gray { background: #f1f5f9; color: #475569; }
+    .badge-amber { background: #fef3c7; color: #92400e; }
+    .badge-indigo { background: #e0e7ff; color: #3730a3; }
+    .badge-purple { background: #f3e8ff; color: #6b21a8; }
+    .badge-orange { background: #ffedd5; color: #9a3412; }
+
+    /* Login */
+    .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #0f172a, #1e293b, #0f172a); padding: 16px; }
+    .login-card { background: #fff; border-radius: 16px; padding: 32px; width: 100%; max-width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+    .login-card h1 { font-size: 22px; font-weight: 700; text-align: center; margin-bottom: 4px; }
+    .login-card .subtitle { text-align: center; color: #64748b; font-size: 13px; margin-bottom: 24px; }
+    .login-icon { width: 56px; height: 56px; background: #059669; border-radius: 12px; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; }
+    .login-icon svg { width: 28px; height: 28px; fill: none; stroke: #fff; stroke-width: 2; }
+    .login-hint { margin-top: 20px; font-size: 12px; color: #94a3b8; }
+    .login-hint p { margin-bottom: 2px; }
+    .login-hint .title { font-weight: 600; color: #64748b; }
+    .error-msg { background: #fef2f2; color: #dc2626; padding: 8px 12px; border-radius: 8px; font-size: 13px; text-align: center; margin-bottom: 12px; }
+
+    /* Timesheet */
+    .ts-cell { width: 28px; height: 24px; text-align: center; font-size: 10px; border-radius: 3px; }
+    .ts-cell select { width: 28px; height: 24px; font-size: 10px; text-align: center; border: none; border-radius: 3px; padding: 0; cursor: pointer; }
+    .day-shift { background: #fffbeb; }
+    .night-shift { background: #eef2ff; }
+
+    /* Shift cards */
+    .shift-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .shift-card { padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
+    .shift-card .name { font-weight: 500; font-size: 14px; }
+    .shift-card .info { font-size: 12px; color: #64748b; margin-top: 4px; }
+
+    /* Footer */
+    .footer { background: #0f172a; color: #64748b; text-align: center; padding: 10px; font-size: 11px; }
+    
+    /* Legend */
+    .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: #64748b; margin-top: 8px; }
+    .legend-item { display: flex; align-items: center; gap: 4px; }
+    .legend-box { width: 16px; height: 16px; border-radius: 3px; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; }
+
+    h2 { font-size: 20px; font-weight: 700; color: #0f172a; }
+    .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+    .spinner { width: 32px; height: 32px; border: 3px solid #e2e8f0; border-top-color: #059669; border-radius: 50%; animation: spin .6s linear infinite; margin: 40px auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+  // ====== State ======
+  let currentUser = null;
+  let activeTab = 'dashboard';
+  let currentMonth = new Date().toISOString().slice(0, 7);
+  let currentShift = '';
+
+  // ====== API ======
+  async function api(method, url, data) {
+    const opts = { method, credentials: 'include', headers: {} };
+    if (data) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(data); }
+    const res = await fetch(url, opts);
+    if (res.status === 401) { currentUser = null; render(); throw new Error('Не авторизован'); }
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || 'Ошибка');
+    return json;
+  }
+  const GET = url => api('GET', url);
+  const POST = (url, d) => api('POST', url, d);
+  const PUT = (url, d) => api('PUT', url, d);
+  const DEL = url => api('DELETE', url);
+
+  // ====== Shift Utils ======
+  function getShiftType(dateStr, shiftNum) {
+    const start = new Date('2026-01-01');
+    const d = new Date(dateStr);
+    const diff = Math.floor((d - start) / 86400000);
+    const cycle = ['day', 'night', 'rest', 'dayoff'];
+    return cycle[((diff % 4) + 4 + shiftNum - 1) % 4];
+  }
+  function daysInMonth(month) { const [y,m] = month.split('-').map(Number); return new Date(y, m, 0).getDate(); }
+
+  const STATUS = {
+    present: { label: 'Я', cls: 'badge-green' },
+    absent: { label: 'Н', cls: 'badge-red' },
+    sick: { label: 'Б', cls: 'badge-yellow' },
+    vacation: { label: 'О', cls: 'badge-blue' },
+    day_off: { label: 'В', cls: 'badge-gray' },
+    transfer: { label: 'П', cls: 'badge-purple' },
+    substitution: { label: 'Зам', cls: 'badge-orange' },
+  };
+
+  // ====== Render ======
+  function render() {
+    const app = document.getElementById('app');
+    if (!currentUser) { app.innerHTML = renderLogin(); bindLogin(); return; }
+    app.innerHTML = renderApp();
+    bindApp();
+    loadTab();
+  }
+
+  // ====== Login ======
+  function renderLogin() {
+    return `<div class="login-wrap">
+      <div class="login-card">
+        <div class="login-icon"><svg viewBox="0 0 24 24"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <h1>Учёт рабочего времени</h1>
+        <p class="subtitle">Система сменного учёта</p>
+        <div id="login-error"></div>
+        <form id="login-form">
+          <div class="form-group" style="margin-bottom:12px">
+            <label>Email</label>
+            <input type="email" id="login-email" placeholder="admin@factory.ru" required>
+          </div>
+          <div class="form-group" style="margin-bottom:16px">
+            <label>Пароль</label>
+            <input type="password" id="login-pass" placeholder="••••••" required>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%;padding:10px">Войти</button>
+        </form>
+        <div class="login-hint">
+          <p class="title">Тестовые аккаунты:</p>
+          <p>Админ: admin@factory.ru / admin123</p>
+          <p>Мастер: master1@factory.ru / master123</p>
+          <p>Бригадир: brig1@factory.ru / brig123</p>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function bindLogin() {
+    document.getElementById('login-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('login-email').value;
+      const pass = document.getElementById('login-pass').value;
+      try {
+        const res = await POST('/api/auth/login', { email, password: pass });
+        currentUser = res.user;
+        activeTab = 'dashboard';
+        render();
+      } catch (err) {
+        document.getElementById('login-error').innerHTML = `<div class="error-msg">${err.message}</div>`;
+      }
+    };
+  }
+
+  // ====== App Shell ======
+  function renderApp() {
+    const roleNames = { admin: 'Администратор', master: 'Мастер', brigadier: 'Бригадир', worker: 'Работник' };
+    const tabs = [
+      { id: 'dashboard', label: '📊 Дашборд', roles: ['admin','master','brigadier','worker'] },
+      { id: 'timesheet', label: '📅 Табель', roles: ['admin','master','brigadier','worker'] },
+      { id: 'workers', label: '👷 Работники', roles: ['admin','master','brigadier'] },
+      { id: 'equipment', label: '🔧 Оборудование', roles: ['admin','master','brigadier'] },
+      { id: 'reports', label: '📈 Отчёты', roles: ['admin','master'] },
+      { id: 'references', label: '📋 Справочники', roles: ['admin'] },
+      { id: 'audit', label: '📝 Журнал', roles: ['admin','master'] },
+    ];
+    const visible = tabs.filter(t => t.roles.includes(currentUser.role));
+    const tabsHtml = visible.map(t =>
+      `<button class="tab ${t.id === activeTab ? 'active' : ''}" data-tab="${t.id}">${t.label}</button>`
+    ).join('');
+
+    return `<header class="header">
+      <div class="header-logo">
+        <div class="icon"><svg width="24" height="24" fill="none" stroke="#fff" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div><h1>Учёт рабочего времени</h1><p>Система сменного учёта</p></div>
+      </div>
+      <div style="display:flex;align-items:center">
+        <div class="header-user"><div class="name">${currentUser.name}</div><div class="role">${roleNames[currentUser.role]}</div></div>
+        <button class="btn-logout" id="logout-btn">Выйти</button>
+      </div>
+    </header>
+    <nav class="tabs">${tabsHtml}</nav>
+    <main class="main" id="tab-content"><div class="spinner"></div></main>
+    <footer class="footer">Система учёта рабочего времени © 2026</footer>`;
+  }
+
+  function bindApp() {
+    document.querySelectorAll('.tab').forEach(btn => {
+      btn.onclick = () => { activeTab = btn.dataset.tab; document.querySelectorAll('.tab').forEach(b => b.classList.remove('active')); btn.classList.add('active'); loadTab(); };
+    });
+    document.getElementById('logout-btn').onclick = async () => { await POST('/api/auth/logout', {}); currentUser = null; render(); };
+  }
+
+  async function loadTab() {
+    const el = document.getElementById('tab-content');
+    if (!el) return;
+    try {
+      switch (activeTab) {
+        case 'dashboard': await loadDashboard(el); break;
+        case 'timesheet': await loadTimesheet(el); break;
+        case 'workers': await loadWorkers(el); break;
+        case 'equipment': await loadEquipment(el); break;
+        case 'reports': await loadReports(el); break;
+        case 'references': await loadReferences(el); break;
+        case 'audit': await loadAudit(el); break;
+      }
+    } catch (e) { el.innerHTML = `<div class="error-msg">${e.message}</div>`; }
+  }
+
+  // ====== Dashboard ======
+  async function loadDashboard(el) {
+    const d = await GET('/api/dashboard');
+    const shiftTypeNames = { day: 'Дневная', night: 'Ночная', rest: 'Отдых', dayoff: 'Выходной' };
+    const shiftTypeCls = { day: 'badge-amber', night: 'badge-indigo', rest: 'badge-green', dayoff: 'badge-gray' };
+    el.innerHTML = `
+      <div class="page-header"><h2>Дашборд</h2><span style="color:#64748b;font-size:13px">Сегодня: ${d.today}</span></div>
+      <div class="stats-grid">
+        <div class="stat-card"><div class="label">Всего работников</div><div class="value">${d.stats.totalWorkers}</div></div>
+        <div class="stat-card"><div class="label">Единиц оборудования</div><div class="value">${d.stats.totalEquipment}</div></div>
+        <div class="stat-card"><div class="label">Отметок сегодня</div><div class="value" style="color:#059669">${d.stats.todayAttendance}</div></div>
+      </div>
+      <div class="card"><h3>Смены сегодня</h3>
+        <div class="shift-grid">${d.shifts.map(s => `
+          <div class="shift-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <span style="font-weight:500;font-size:14px">${s.name}</span>
+              <span class="badge ${shiftTypeCls[s.shiftType]}">${shiftTypeNames[s.shiftType]}</span>
+            </div>
+            <div style="font-size:12px;color:#64748b">Мастер: ${s.masterName || '—'}</div>
+            <div style="font-size:12px;color:#64748b">Работников: ${s.workerCount}</div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  // ====== Timesheet ======
+  async function loadTimesheet(el) {
+    let url = `/api/reports/timesheet?month=${currentMonth}`;
+    if (currentShift) url += `&shiftNumber=${currentShift}`;
+    const data = await GET(url);
+    const days = daysInMonth(currentMonth);
+    const workers = data.workers || [];
+    const att = data.attendance || {};
+    const canEdit = currentUser.role === 'admin' || currentUser.role === 'master';
+
+    let dayHeaders = '';
+    for (let d = 1; d <= days; d++) {
+      const dateStr = currentMonth + '-' + String(d).padStart(2, '0');
+      const st = getShiftType(dateStr, currentShift ? Number(currentShift) : 1);
+      const cls = st === 'day' ? 'day-shift' : st === 'night' ? 'night-shift' : '';
+      dayHeaders += `<th class="${cls}" style="min-width:28px;text-align:center;padding:4px 2px">${d}</th>`;
+    }
+
+    let rows = '';
+    for (const w of workers) {
+      let totalH = 0;
+      let cells = '';
+      for (let d = 1; d <= days; d++) {
+        const dateStr = currentMonth + '-' + String(d).padStart(2, '0');
+        const st = getShiftType(dateStr, w.shiftNumber);
+        const key = w.id + '_' + dateStr + '_' + st;
+        const record = att[key];
+        const status = record ? record.status : ((st === 'rest' || st === 'dayoff') ? 'day_off' : '');
+        if (status === 'present') totalH += (record?.hoursWorked || 12);
+        const bgCls = st === 'day' ? 'day-shift' : st === 'night' ? 'night-shift' : '';
+
+        if (canEdit && st !== 'rest' && st !== 'dayoff') {
+          const opts = Object.entries(STATUS).map(([k,v]) =>
+            `<option value="${k}" ${status===k?'selected':''}>${v.label}</option>`
+          ).join('');
+          cells += `<td class="${bgCls}" style="padding:1px"><select data-w="${w.id}" data-d="${dateStr}" data-s="${st}" class="ts-cell-select" style="width:28px;height:22px;font-size:10px;border:none;border-radius:3px;padding:0;background:${status ? '' : 'transparent'}">${status ? '' : '<option value="">—</option>'}${opts}</select></td>`;
+        } else {
+          const s = STATUS[status];
+          cells += `<td class="${bgCls}" style="text-align:center;padding:2px">${s ? `<span class="badge ${s.cls}" style="font-size:9px;padding:1px 4px">${s.label}</span>` : ''}</td>`;
+        }
+      }
+      rows += `<tr><td style="font-weight:500;white-space:nowrap;position:sticky;left:0;background:#fff;z-index:1">${w.lastName} ${w.firstName?.[0]}.${w.patronymic?.[0]}. <span style="color:#94a3b8;font-size:10px">${w.equipmentName || ''}</span></td>${cells}<td style="font-weight:700;color:#059669;text-align:center">${totalH}</td></tr>`;
+    }
+
+    el.innerHTML = `
+      <div class="page-header"><h2>Табель</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="month" id="ts-month" value="${currentMonth}" style="width:150px">
+          <select id="ts-shift" style="width:130px">
+            <option value="">Все смены</option>
+            <option value="1" ${currentShift==='1'?'selected':''}>Смена 1</option>
+            <option value="2" ${currentShift==='2'?'selected':''}>Смена 2</option>
+            <option value="3" ${currentShift==='3'?'selected':''}>Смена 3</option>
+            <option value="4" ${currentShift==='4'?'selected':''}>Смена 4</option>
+          </select>
+        </div>
+      </div>
+      <div class="card"><div class="table-wrap"><table>
+        <thead><tr><th style="min-width:140px;position:sticky;left:0;background:#f8fafc;z-index:2">Работник</th>${dayHeaders}<th>Часы</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div></div>
+      <div class="legend">
+        ${Object.entries(STATUS).map(([k,v]) => `<div class="legend-item"><span class="legend-box ${v.cls}">${v.label}</span>${v.label === 'Я' ? 'Явка' : v.label === 'Н' ? 'Неявка' : v.label === 'Б' ? 'Больничный' : v.label === 'О' ? 'Отпуск' : v.label === 'В' ? 'Выходной' : k}</div>`).join('')}
+      </div>`;
+
+    document.getElementById('ts-month').onchange = (e) => { currentMonth = e.target.value; loadTimesheet(el); };
+    document.getElementById('ts-shift').onchange = (e) => { currentShift = e.target.value; loadTimesheet(el); };
+
+    if (canEdit) {
+      el.querySelectorAll('.ts-cell-select').forEach(sel => {
+        sel.onchange = async () => {
+          try {
+            await POST('/api/attendance', {
+              workerId: sel.dataset.w, date: sel.dataset.d, shiftType: sel.dataset.s,
+              status: sel.value, hoursWorked: sel.value === 'present' ? 12 : 0,
+              nightHours: sel.value === 'present' && sel.dataset.s === 'night' ? 4 : 0
+            });
+            loadTimesheet(el);
+          } catch (e) { alert(e.message); }
+        };
+      });
+    }
+  }
+
+  // ====== Workers ======
+  async function loadWorkers(el) {
+    const [workers, equipment, grades, shifts] = await Promise.all([GET('/api/workers'), GET('/api/equipment'), GET('/api/grades'), GET('/api/shifts')]);
+    const isAdmin = currentUser.role === 'admin';
+    el.innerHTML = `
+      <div class="page-header"><h2>Работники</h2>
+        ${isAdmin ? '<button class="btn btn-primary" id="add-worker">+ Добавить</button>' : ''}
+      </div>
+      <div id="worker-form-area"></div>
+      <div class="card"><div class="table-wrap"><table>
+        <thead><tr><th>ФИО</th><th>Разряд</th><th>Смена</th><th>Оборудование</th><th>Статус</th>${isAdmin ? '<th>Действия</th>' : ''}</tr></thead>
+        <tbody>${workers.map(w => `<tr>
+          <td style="font-weight:500">${w.lastName} ${w.firstName} ${w.patronymic}</td>
+          <td>${w.gradeName} (${w.hourlyRate?.toFixed(0)}₽/ч)</td>
+          <td>${w.shiftName}</td>
+          <td>${w.equipmentName || '—'}</td>
+          <td><span class="badge ${w.isActive ? 'badge-green' : 'badge-red'}">${w.isActive ? 'Активен' : 'Неактивен'}</span></td>
+          ${isAdmin ? `<td><button class="btn-link edit-w" data-id="${w.id}">Ред.</button> <button class="btn-link" style="color:#ef4444" onclick="if(confirm('Удалить?'))delWorker('${w.id}')">Удал.</button></td>` : ''}
+        </tr>`).join('')}</tbody>
+      </table></div></div>`;
+
+    if (isAdmin) {
+      const formArea = document.getElementById('worker-form-area');
+      const showForm = (w) => {
+        const eqOpts = equipment.map(e => `<option value="${e.id}" ${w?.equipmentId==e.id?'selected':''}>${e.name}</option>`).join('');
+        const grOpts = grades.map(g => `<option value="${g.number}" ${w?.gradeNumber==g.number?'selected':''}>${g.name}</option>`).join('');
+        const shOpts = shifts.map(s => `<option value="${s.number}" ${w?.shiftNumber==s.number?'selected':''}>${s.name}</option>`).join('');
+        formArea.innerHTML = `<div class="card" style="margin-bottom:16px"><h3>${w ? 'Редактировать' : 'Новый работник'}</h3>
+          <form id="w-form" class="form-grid">
+            <div class="form-group"><label>Фамилия</label><input name="lastName" value="${w?.lastName||''}" required></div>
+            <div class="form-group"><label>Имя</label><input name="firstName" value="${w?.firstName||''}" required></div>
+            <div class="form-group"><label>Отчество</label><input name="patronymic" value="${w?.patronymic||''}" required></div>
+            <div class="form-group"><label>Разряд</label><select name="gradeNumber">${grOpts}</select></div>
+            <div class="form-group"><label>Смена</label><select name="shiftNumber">${shOpts}</select></div>
+            <div class="form-group"><label>Оборудование</label><select name="equipmentId"><option value="">Без оборудования</option>${eqOpts}</select></div>
+            <div class="form-group" style="justify-content:center"><label><input type="checkbox" name="isActive" ${w?.isActive!==false?'checked':''}> Активен</label></div>
+            <div class="form-actions" style="grid-column:1/-1"><button type="button" class="btn btn-secondary" id="cancel-w">Отмена</button><button type="submit" class="btn btn-primary">${w?'Сохранить':'Добавить'}</button></div>
+          </form></div>`;
+        document.getElementById('cancel-w').onclick = () => { formArea.innerHTML = ''; };
+        document.getElementById('w-form').onsubmit = async (e) => {
+          e.preventDefault(); const fd = new FormData(e.target); const data = Object.fromEntries(fd); data.gradeNumber = +data.gradeNumber; data.shiftNumber = +data.shiftNumber; data.isActive = !!data.isActive;
+          try { if (w) await PUT('/api/workers/'+w.id, data); else await POST('/api/workers', data); loadWorkers(el); } catch (err) { alert(err.message); }
+        };
+      };
+      document.getElementById('add-worker').onclick = () => showForm(null);
+      el.querySelectorAll('.edit-w').forEach(btn => btn.onclick = () => { const w = workers.find(x => x.id === btn.dataset.id); showForm(w); });
+    }
+  }
+
+  window.delWorker = async (id) => { try { await DEL('/api/workers/'+id); loadTab(); } catch(e) { alert(e.message); } };
+
+  // ====== Equipment ======
+  async function loadEquipment(el) {
+    const equipment = await GET('/api/equipment');
+    const isAdmin = currentUser.role === 'admin';
+    el.innerHTML = `
+      <div class="page-header"><h2>Оборудование</h2>
+        ${isAdmin ? '<button class="btn btn-primary" id="add-eq">+ Добавить</button>' : ''}
+      </div>
+      <div id="eq-form-area"></div>
+      <div class="card"><div class="table-wrap"><table>
+        <thead><tr><th>Название</th><th>Цех</th><th>Участок</th><th>Работников</th>${isAdmin?'<th>Действия</th>':''}</tr></thead>
+        <tbody>${equipment.map(e => `<tr>
+          <td style="font-weight:500">${e.name}</td><td>${e.workshop}</td><td>${e.area}</td><td>${e.workerCount}</td>
+          ${isAdmin?`<td><button class="btn-link edit-eq" data-id="${e.id}">Ред.</button> <button class="btn-link" style="color:#ef4444" onclick="if(confirm('Удалить?'))delEq(${e.id})">Удал.</button></td>`:''}
+        </tr>`).join('')}</tbody>
+      </table></div></div>`;
+
+    if (isAdmin) {
+      const formArea = document.getElementById('eq-form-area');
+      const showForm = (item) => {
+        formArea.innerHTML = `<div class="card" style="margin-bottom:16px"><h3>${item?'Редактировать':'Новое оборудование'}</h3>
+          <form id="eq-form" class="form-grid">
+            <div class="form-group"><label>Название</label><input name="name" value="${item?.name||''}" required></div>
+            <div class="form-group"><label>Цех</label><input name="workshop" value="${item?.workshop||'Цех №1'}"></div>
+            <div class="form-group"><label>Участок</label><input name="area" value="${item?.area||''}"></div>
+            <div class="form-actions" style="grid-column:1/-1"><button type="button" class="btn btn-secondary" id="cancel-eq">Отмена</button><button type="submit" class="btn btn-primary">${item?'Сохранить':'Добавить'}</button></div>
+          </form></div>`;
+        document.getElementById('cancel-eq').onclick = () => { formArea.innerHTML = ''; };
+        document.getElementById('eq-form').onsubmit = async (e) => {
+          e.preventDefault(); const fd = new FormData(e.target); const data = Object.fromEntries(fd);
+          try { if (item) await PUT('/api/equipment/'+item.id, data); else await POST('/api/equipment', data); loadEquipment(el); } catch(err) { alert(err.message); }
+        };
+      };
+      document.getElementById('add-eq').onclick = () => showForm(null);
+      el.querySelectorAll('.edit-eq').forEach(btn => btn.onclick = () => { const item = equipment.find(x => x.id == btn.dataset.id); showForm(item); });
+    }
+  }
+  window.delEq = async (id) => { try { await DEL('/api/equipment/'+id); loadTab(); } catch(e) { alert(e.message); } };
+
+  // ====== Reports ======
+  async function loadReports(el) {
+    const report = await GET(`/api/reports/monthly?month=${currentMonth}`);
+    el.innerHTML = `
+      <div class="page-header"><h2>Отчёты</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="month" id="rep-month" value="${currentMonth}" style="width:150px">
+          <button class="btn btn-primary" id="rep-load">Показать</button>
+        </div>
+      </div>
+      <div class="card"><div class="table-wrap"><table>
+        <thead><tr><th>Работник</th><th>Смена</th><th>Разряд</th><th>Оборудование</th><th style="text-align:center">Часы</th><th style="text-align:center">Ночные</th><th style="text-align:center">Явки</th><th style="text-align:center">Неявки</th><th style="text-align:center">Больн.</th><th style="text-align:center">Отпуск</th></tr></thead>
+        <tbody>${report.map(r => `<tr>
+          <td style="font-weight:500">${r.lastName} ${r.firstName?.[0]}.${r.patronymic?.[0]}.</td>
+          <td>${r.shiftNumber}</td><td>${r.gradeName}</td><td>${r.equipmentName||'—'}</td>
+          <td style="text-align:center;font-weight:700;color:#059669">${r.totalHours}</td>
+          <td style="text-align:center">${r.nightHours}</td>
+          <td style="text-align:center">${r.presentDays}</td>
+          <td style="text-align:center;color:#ef4444">${r.absentDays}</td>
+          <td style="text-align:center;color:#f59e0b">${r.sickDays}</td>
+          <td style="text-align:center;color:#3b82f6">${r.vacationDays}</td>
+        </tr>`).join('')}</tbody>
+      </table></div></div>`;
+    document.getElementById('rep-month').onchange = (e) => { currentMonth = e.target.value; };
+    document.getElementById('rep-load').onclick = () => { currentMonth = document.getElementById('rep-month').value; loadReports(el); };
+  }
+
+  // ====== References ======
+  async function loadReferences(el) {
+    const [grades, shifts, holidays] = await Promise.all([GET('/api/grades'), GET('/api/shifts'), GET('/api/holidays')]);
+    el.innerHTML = `
+      <div class="page-header"><h2>Справочники</h2></div>
+      <div class="card" style="margin-bottom:16px"><h3>Разряды</h3>
+        <table><thead><tr><th>Разряд</th><th>Название</th><th>Часовая ставка (₽)</th></tr></thead>
+        <tbody>${grades.map(g => `<tr><td style="font-weight:700">${g.number}</td><td>${g.name}</td>
+          <td><input type="number" value="${g.hourlyRate}" data-grade="${g.number}" class="grade-rate" style="width:100px" step="0.01"></td>
+        </tr>`).join('')}</tbody></table>
+      </div>
+      <div class="card" style="margin-bottom:16px"><h3>Смены</h3>
+        <table><thead><tr><th>Номер</th><th>Название</th><th>Мастер</th></tr></thead>
+        <tbody>${shifts.map(s => `<tr><td style="font-weight:700">${s.number}</td><td>${s.name}</td><td>${s.masterName||'—'}</td></tr>`).join('')}</tbody></table>
+      </div>
+      <div class="card"><h3>Праздники</h3>
+        <form id="holiday-form" style="display:flex;gap:8px;margin-bottom:12px">
+          <input type="date" name="date" required style="width:160px">
+          <input name="name" placeholder="Название" required style="flex:1">
+          <button type="submit" class="btn btn-primary btn-sm">Добавить</button>
+        </form>
+        <table><tbody>${holidays.map(h => `<tr><td>${h.date}</td><td>${h.name}</td><td><button class="btn-link" style="color:#ef4444" onclick="delHoliday('${h.id}')">Удалить</button></td></tr>`).join('')}</tbody></table>
+      </div>`;
+
+    el.querySelectorAll('.grade-rate').forEach(inp => {
+      inp.onchange = async () => {
+        const g = grades.find(x => x.number == inp.dataset.grade);
+        await PUT('/api/grades/'+inp.dataset.grade, { name: g.name, hourlyRate: +inp.value });
+      };
+    });
+    document.getElementById('holiday-form').onsubmit = async (e) => {
+      e.preventDefault(); const fd = new FormData(e.target);
+      await POST('/api/holidays', { date: fd.get('date'), name: fd.get('name') });
+      loadReferences(el);
+    };
+  }
+  window.delHoliday = async (id) => { if(!confirm('Удалить?')) return; await DEL('/api/holidays/'+id); loadTab(); };
+
+  // ====== Audit ======
+  async function loadAudit(el) {
+    const logs = await GET('/api/audit-logs');
+    el.innerHTML = `
+      <div class="page-header"><h2>Журнал действий</h2></div>
+      <div class="card"><div class="table-wrap"><table>
+        <thead><tr><th>Дата</th><th>Пользователь</th><th>Действие</th><th>Тип</th><th>ID</th></tr></thead>
+        <tbody>${logs.map(l => `<tr>
+          <td style="font-size:12px;color:#64748b">${new Date(l.createdAt).toLocaleString('ru')}</td>
+          <td>${l.userName}</td><td>${l.action}</td><td>${l.entityType}</td>
+          <td style="font-size:11px;color:#94a3b8">${l.entityId||''}</td>
+        </tr>`).join('')}</tbody>
+      </table></div></div>`;
+  }
+
+  // ====== Init ======
+  (async () => {
+    try { currentUser = await GET('/api/auth/me'); } catch {}
+    render();
+  })();
+  </script>
+</body>
+</html>

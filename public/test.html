@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Test</title></head>
+<body><h1>TEST PAGE WORKS!</h1>
+<p>If you see this, Express serves HTML fine.</p>
+<script>
+document.body.innerHTML += '<p style="color:green">JS also works!</p>';
+fetch('/api/auth/login', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({email:'admin@factory.ru', password:'admin123'})
+}).then(r => r.json()).then(d => {
+  document.body.innerHTML += '<p style="color:blue">Login result: ' + JSON.stringify(d).substring(0,100) + '</p>';
+}).catch(e => {
+  document.body.innerHTML += '<p style="color:red">Login error: ' + e.message + '</p>';
+});
+</script>
+</body></html>

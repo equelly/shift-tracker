@@ -1,0 +1,229 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String        @id @default(cuid())
+  email         String        @unique
+  password      String
+  name          String
+  role          String        @default("worker") // admin, master, brigadier, worker
+  workerId      String?       @unique
+  worker        Worker?       @relation(fields: [workerId], references: [id])
+  mustChangePassword Boolean  @default(false)
+  shiftMaster          Shift?              @relation("ShiftMaster")
+  auditLogs            AuditLog[]          @relation("UserAuditLogs")
+  notifications        Notification[]
+  createdTransferOrders TransferOrder[]     @relation("TransferOrderCreator")
+  approvedTransferOrders TransferOrder[]    @relation("TransferOrderApprover")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model Grade {
+  number     Int      @id // 1-8
+  name       String
+  hourlyRate Float    @default(0)
+  workers    Worker[]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Shift {
+  number    Int      @id // 1-4
+  name      String
+  masterId       String?  @unique
+  master         User?    @relation("ShiftMaster", fields: [masterId], references: [id])
+  workers        Worker[]
+  transferOrders TransferOrder[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Equipment {
+  id              Int      @id @default(autoincrement())
+  name            String
+  workshop        String   @default("Цех №1")
+  area            String
+  workers              Worker[]
+  substitutions        Substitution[]
+  fromTransferItems    TransferOrderItem[] @relation("FromEquipment")
+  toTransferItems      TransferOrderItem[] @relation("ToEquipment")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model Worker {
+  id                       String   @id @default(cuid())
+  lastName                 String
+  firstName                String
+  patronymic               String
+  gradeNumber              Int
+  grade                    Grade    @relation(fields: [gradeNumber], references: [number])
+  shiftNumber              Int
+  shift                    Shift    @relation(fields: [shiftNumber], references: [number])
+  equipmentId              Int?
+  equipment                Equipment? @relation(fields: [equipmentId], references: [id])
+  position                 String   @default("worker") // worker, master, master_pu, section_head
+  isActive                 Boolean  @default(true)
+  user                     User?
+  professions              WorkerProfession[]
+  benefits                 WorkerBenefit[]
+  attendanceRecords        AttendanceRecord[]
+  substitutionsAsWorker    Substitution[] @relation("WorkerSubstitutions")
+  substitutionsAsSubstitute Substitution[] @relation("SubstituteSubstitutions")
+  transfers                Transfer[]
+  transferOrderItems       TransferOrderItem[]
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@unique([lastName, firstName, patronymic])
+}
+
+model WorkerProfession {
+  id             String   @id @default(cuid())
+  workerId       String
+  worker         Worker   @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  professionName String
+  createdAt      DateTime @default(now())
+}
+
+model WorkerBenefit {
+  id          String   @id @default(cuid())
+  workerId    String
+  worker      Worker   @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  benefitType String
+  description String?
+  createdAt   DateTime @default(now())
+}
+
+model AttendanceRecord {
+  id              String        @id @default(cuid())
+  workerId        String
+  worker          Worker        @relation(fields: [workerId], references: [id])
+  date            String        // "2026-04-20"
+  shiftType       String        // "day" | "night"
+  status          String        // present, absent, sick, vacation, day_off, transfer, state_duty, collective_agreement, substitution
+  absenceReason   String?
+  notes           String?
+  hoursWorked     Float         @default(12)
+  nightHours      Float         @default(0)
+  holidayHours    Float         @default(0)
+  auditLogs       AuditLog[]    @relation("AttendanceAuditLogs")
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([workerId, date, shiftType])
+}
+
+model Substitution {
+  id                 String     @id @default(cuid())
+  workerId           String
+  worker             Worker     @relation("WorkerSubstitutions", fields: [workerId], references: [id])
+  substituteWorkerId String
+  substituteWorker   Worker     @relation("SubstituteSubstitutions", fields: [substituteWorkerId], references: [id])
+  date               String
+  shiftType          String
+  equipmentId        Int?
+  equipment          Equipment? @relation(fields: [equipmentId], references: [id])
+  reason             String?
+  createdAt          DateTime   @default(now())
+}
+
+model TransferOrder {
+  id              String              @id @default(cuid())
+  orderNumber     String              @unique   // "Р-0001"
+  orderDate       String                        // "2026-04-21"
+  orderType       String                        // "equipment" | "shift" | "both"
+  status          String              @default("draft")  // draft, approved, cancelled
+  shiftNumber     Int?                          // к какой смене относится распоряжение
+  shift           Shift?              @relation(fields: [shiftNumber], references: [number])
+  reason          String?                       // основание
+  notes           String?                       // примечания
+  createdBy       String                        // userId кто составил
+  creator         User                @relation("TransferOrderCreator", fields: [createdBy], references: [id])
+  approvedBy      String?                       // userId кто утвердил
+  approver        User?               @relation("TransferOrderApprover", fields: [approvedBy], references: [id])
+  approvedAt      DateTime?
+  items           TransferOrderItem[]
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+}
+
+model TransferOrderItem {
+  id              String        @id @default(cuid())
+  orderId         String
+  order           TransferOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  workerId        String
+  worker          Worker        @relation(fields: [workerId], references: [id])
+  fromEquipmentId Int?
+  fromEquipment   Equipment?    @relation("FromEquipment", fields: [fromEquipmentId], references: [id])
+  toEquipmentId   Int?
+  toEquipment     Equipment?    @relation("ToEquipment", fields: [toEquipmentId], references: [id])
+  fromShiftNumber Int?
+  toShiftNumber   Int?
+  fromGradeNumber Int?
+  toGradeNumber   Int?
+  executed        Boolean       @default(false)  // выполнен ли перенос в карточке работника
+  createdAt       DateTime      @default(now())
+}
+
+// Старая модель Transfer оставлена для обратной совместимости
+model Transfer {
+  id              String   @id @default(cuid())
+  workerId        String
+  worker          Worker   @relation(fields: [workerId], references: [id])
+  fromEquipmentId Int?
+  toEquipmentId   Int?
+  fromShiftNumber Int?
+  toShiftNumber   Int?
+  date            String
+  reason          String?
+  createdAt       DateTime @default(now())
+}
+
+model AuditLog {
+  id            String            @id @default(cuid())
+  userId        String
+  userName      String
+  action        String            // create, update, delete
+  entityType    String
+  entityId      String?
+  description   String?
+  oldValues     String?
+  newValues     String?
+  attendanceId  String?
+  user          User              @relation("UserAuditLogs", fields: [userId], references: [id])
+  attendance    AttendanceRecord? @relation("AttendanceAuditLogs", fields: [attendanceId], references: [id])
+  createdAt     DateTime          @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // advance_notice, salary_notice, general
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model ScheduleConfig {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Holiday {
+  id        String   @id @default(cuid())
+  date      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+}
