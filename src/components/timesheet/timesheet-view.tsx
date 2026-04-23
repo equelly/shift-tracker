@@ -53,7 +53,7 @@ export function TimesheetView() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const [shiftNumber, setShiftNumber] = useState('1');
+  const [shiftNumber, setShiftNumber] = useState('1'); // '0' = Руководители
   const [timesheet, setTimesheet] = useState<TimesheetWorker[]>([]);
   const [daysInMonth, setDaysInMonth] = useState(30);
   const [loading, setLoading] = useState(true);
@@ -157,7 +157,8 @@ export function TimesheetView() {
     setSaving(false);
   };
 
-  const getStatusDisplay = (status: string, phase: ShiftPhase) => {
+  const getStatusDisplay = (status: string, phase: ShiftPhase, isNonShift?: boolean) => {
+    if (status === 'day' && isNonShift) return { text: 'Р', color: 'bg-emerald-100 text-emerald-800', editable: true };
     if (status === 'day') return { text: 'Д', color: 'bg-green-100 text-green-800', editable: true };
     if (status === 'night') return { text: 'Н', color: 'bg-blue-100 text-blue-800', editable: true };
     if (status === 'rest') return { text: 'О', color: 'bg-gray-100 text-gray-500', editable: false };
@@ -216,8 +217,9 @@ export function TimesheetView() {
             <div className="flex items-center gap-2 w-full sm:w-auto">
               <label className="text-sm font-medium text-gray-600 whitespace-nowrap">Смена:</label>
               <Select value={shiftNumber} onValueChange={setShiftNumber}>
-                <SelectTrigger className="w-full sm:w-32"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-full sm:w-36"><SelectValue /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="0">Руководители</SelectItem>
                   <SelectItem value="1">Смена 1</SelectItem>
                   <SelectItem value="2">Смена 2</SelectItem>
                   <SelectItem value="3">Смена 3</SelectItem>
@@ -232,6 +234,7 @@ export function TimesheetView() {
       {/* Legend */}
       <div className="overflow-x-auto pb-1 -mx-1 px-1 md:overflow-visible md:mx-0 md:px-0">
         <div className="flex gap-1.5 sm:gap-2 text-[10px] sm:text-xs whitespace-nowrap md:whitespace-normal md:flex-wrap">
+          <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-emerald-100 text-emerald-800 rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5">Р</span><span className="hidden xs:inline">Раб.день 8ч</span></span>
           <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-green-100 text-green-800 rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5">Д</span><span className="hidden xs:inline">День</span></span>
           <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-blue-100 text-blue-800 rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5">Н</span><span className="hidden xs:inline">Ночь</span></span>
           <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-gray-100 text-gray-500 rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5">О</span><span className="hidden xs:inline">Отсыпной</span></span>
@@ -300,7 +303,7 @@ export function TimesheetView() {
                   return pads;
                 })()}
                 {worker.days.map(day => {
-                  const display = getStatusDisplay(day.status, day.phase);
+                  const display = getStatusDisplay(day.status, day.phase, shiftNumber === '0');
                   const dateObj = new Date(year, month - 1, day.day);
                   const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day.day).padStart(2, '0')}`;
                   const isH = holidays.has(dateStr);
@@ -323,13 +326,15 @@ export function TimesheetView() {
                   <span className="text-emerald-700 font-medium">
                     Часы: <span className="font-bold">{worker.totalHours}</span>
                   </span>
-                  <span className="text-blue-700">
-                    Ночн.: <span className="font-semibold">{worker.totalNightHours}</span>
-                  </span>
+                  {shiftNumber !== '0' && (
+                    <span className="text-blue-700">
+                      Ночн.: <span className="font-semibold">{worker.totalNightHours}</span>
+                    </span>
+                  )}
                   <span className="text-red-700">
                     Праздн.: <span className="font-semibold">{worker.totalHolidayHours}</span>
                   </span>
-                  {worker.totalCombinationHours > 0 && (
+                  {worker.totalCombinationHours > 0 && shiftNumber !== '0' && (
                     <span className="text-rose-700">
                       Совмещ.: <span className="font-semibold">{worker.totalCombinationHours}</span>
                     </span>
@@ -363,9 +368,9 @@ export function TimesheetView() {
                   );
                 })}
                 <th className="px-2 py-2 text-center font-medium text-gray-700 border-l">Часы</th>
-                <th className="px-2 py-2 text-center font-medium text-gray-700">Ночн.</th>
+                {shiftNumber !== '0' && <th className="px-2 py-2 text-center font-medium text-gray-700">Ночн.</th>}
                 <th className="px-2 py-2 text-center font-medium text-gray-700">Праздн.</th>
-                <th className="px-2 py-2 text-center font-medium text-rose-700">Совмещ.</th>
+                {shiftNumber !== '0' && <th className="px-2 py-2 text-center font-medium text-rose-700">Совмещ.</th>}
               </tr>
             </thead>
             <tbody>
@@ -381,7 +386,7 @@ export function TimesheetView() {
                     </div>
                   </td>
                   {worker.days.map(day => {
-                    const display = getStatusDisplay(day.status, day.phase);
+                    const display = getStatusDisplay(day.status, day.phase, shiftNumber === '0');
                     const isCombDay = day.isCombination && (day.status === 'day' || day.status === 'night' || day.status === 'present');
                     return (
                       <td
@@ -396,11 +401,13 @@ export function TimesheetView() {
                     );
                   })}
                   <td className="px-2 py-1 text-center font-medium border-l text-emerald-700">{worker.totalHours}</td>
-                  <td className="px-2 py-1 text-center text-blue-700">{worker.totalNightHours}</td>
+                  {shiftNumber !== '0' && <td className="px-2 py-1 text-center text-blue-700">{worker.totalNightHours}</td>}
                   <td className="px-2 py-1 text-center text-red-700">{worker.totalHolidayHours}</td>
-                  <td className={`px-2 py-1 text-center font-medium ${worker.totalCombinationHours > 0 ? 'text-rose-700' : 'text-gray-400'}`}>
-                    {worker.totalCombinationHours ?? 0}
-                  </td>
+                  {shiftNumber !== '0' && (
+                    <td className={`px-2 py-1 text-center font-medium ${worker.totalCombinationHours > 0 ? 'text-rose-700' : 'text-gray-400'}`}>
+                      {worker.totalCombinationHours ?? 0}
+                    </td>
+                  )}
                 </tr>
               ))}
               {timesheet.length === 0 && (
@@ -425,7 +432,7 @@ export function TimesheetView() {
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="text-sm text-gray-500">
-              Дата: {editCell?.date} | Смена: {editCell?.shiftType === 'day' ? 'День (7:30-19:30)' : 'Ночь (19:30-7:30)'}
+              Дата: {editCell?.date} | {shiftNumber === '0' ? 'Рабочий день (8ч)' : editCell?.shiftType === 'day' ? 'День (7:30-19:30)' : 'Ночь (19:30-7:30)'}
             </div>
             <div>
               <label className="text-sm font-medium mb-2 block">Статус:</label>

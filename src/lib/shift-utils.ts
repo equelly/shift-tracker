@@ -229,3 +229,35 @@ export const SHIFT_TYPE_LABELS: Record<string, string> = {
   night: 'Ночь (19:30–7:30)',
   day_8h: 'День (8:00–17:00)',
 };
+export type DaySchedule = 'working' | 'day_off';
+
+export function getNonShiftSchedule(
+  position: string,
+  year: number,
+  month: number,
+): Map<string, DaySchedule> {
+  const schedule = new Map<string, DaySchedule>();
+  const daysInMonth = new Date(year, month, 0).getDate();
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = new Date(year, month - 1, day);
+    const dateStr = formatDate(date);
+    const dow = date.getDay();
+    let isDayOff = false;
+    if (position === 'master_pu') isDayOff = dow === 5 || dow === 6;
+    else if (position === 'section_head') isDayOff = dow === 0 || dow === 1;
+    schedule.set(dateStr, isDayOff ? 'day_off' : 'working');
+  }
+  return schedule;
+}
+
+export function isShiftPosition(position: string): boolean {
+  return position === 'worker' || position === 'master';
+}
+
+export function isNonShiftPosition(position: string): boolean {
+  return position === 'master_pu' || position === 'section_head';
+}
+
+export function getWorkingHours(position: string): number {
+  return isNonShiftPosition(position) ? 8 : 12;
+}

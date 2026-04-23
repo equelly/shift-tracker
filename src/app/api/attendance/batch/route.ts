@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { calculateNightHours, getScheduleType } from '@/lib/shift-utils';
+import { calculateNightHours, isNonShiftPosition } from '@/lib/shift-utils';
 import { getAuditUser } from '@/lib/auth-guard';
 
 export async function POST(request: NextRequest) {
@@ -17,20 +17,16 @@ export async function POST(request: NextRequest) {
     for (const rec of records) {
       const { workerId, date, shiftType, status, absenceReason, notes } = rec;
 
+      // Skip records without required fields
       if (!workerId || !date || !shiftType || !status) {
         console.warn('Skipping attendance record with missing fields:', rec);
         continue;
       }
 
-      // Get worker position for schedule type
-      let scheduleType = '12h';
-      try {
-        const worker = await db.worker.findUnique({
-          where: { id: workerId },
-          select: { position: true },
-        });
-        scheduleType = getScheduleType(worker?.position || 'worker');
-      } catch {}
+      // Get worker to determine position (for hours calculation)
+      const worker = await db.worker.findUnique({ where: { id: workerId }, select: { position: true } });
+      const position = worker?.position || 'worker';
+      const isNonShift = isNonShiftPosition(position);
 
       // Check holiday
       const holiday = await db.holiday.findUnique({ where: { date } });
@@ -40,29 +36,20 @@ export async function POST(request: NextRequest) {
       let holidayHours = 0;
 
       if (status === 'present') {
-        if (scheduleType === '8h' || shiftType === 'day_8h') {
-          hoursWorked = 8;
-          nightHours = 0;
-          if (holiday) holidayHours = 8;
-        } else {
-          hoursWorked = 12;
-          nightHours = calculateNightHours(shiftType as 'day' | 'night');
-          if (holiday) holidayHours = 12;
-        }
+        hoursWorked = isNonShift ? 8 : 12;
+        nightHours = isNonShift ? 0 : calculateNightHours(shiftType);
+        if (holiday) holidayHours = isNonShift ? 8 : 12;
       }
-
-      // Normalize shiftType for storage
-      const storeShiftType = shiftType === 'day_8h' ? 'day' : shiftType;
 
       try {
         const record = await db.attendanceRecord.upsert({
           where: {
-            workerId_date_shiftType: { workerId, date, shiftType: storeShiftType },
+            workerId_date_shiftType: { workerId, date, shiftType },
           },
           create: {
             workerId,
             date,
-            shiftType: storeShiftType,
+            shiftType,
             status,
             absenceReason: absenceReason || null,
             notes: notes || null,

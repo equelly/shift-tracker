@@ -4,6 +4,13 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 
+interface LeaderInfo {
+  id: string;
+  position: string;
+  positionLabel: string;
+  isWorkingToday: boolean;
+}
+
 interface DashboardData {
   today: string;
   dayOfMonth: number;
@@ -15,6 +22,7 @@ interface DashboardData {
   unreadNotifications: number;
   recentLogs: any[];
   notificationMessage: string;
+  leaders: LeaderInfo[];
 }
 
 export function DashboardView() {
@@ -37,8 +45,6 @@ export function DashboardView() {
   }
 
   if (!data) return <div className="text-center text-red-600">Ошибка загрузки данных</div>;
-
-  const phaseLabels: Record<number, string> = { 1: 'День', 2: 'Ночь', 3: 'Отсыпной', 4: 'Выходной' };
 
   return (
     <div className="space-y-6 px-3 sm:px-0">
@@ -173,6 +179,33 @@ export function DashboardView() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Non-shift leaders status */}
+      {data.leaders && data.leaders.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Руководители сегодня</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {data.leaders.map((leader, idx) => (
+                <div key={leader.id || idx} className={`p-3 rounded-lg border ${leader.isWorkingToday ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'} flex items-center justify-between`}>
+                  <div className="flex items-center gap-2">
+                    <Badge className={leader.position === 'master_pu' ? 'bg-blue-600' : 'bg-indigo-600'}>
+                      {leader.positionLabel}
+                    </Badge>
+                    <span className="text-sm text-gray-700">{leader.position === 'master_pu' ? '8ч, выходные Пт+Сб' : '8ч, выходные Вс+Пн'}</span>
+                  </div>
+                  <Badge variant={leader.isWorkingToday ? 'default' : 'outline'}
+                    className={leader.isWorkingToday ? 'bg-emerald-600' : ''}>
+                    {leader.isWorkingToday ? 'На работе' : 'Выходной'}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Recent activity */}
       {data.recentLogs.length > 0 && (

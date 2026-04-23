@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { getMonthSchedule, calculateNightHours } from '@/lib/shift-utils';
+import { getMonthSchedule, getNonShiftSchedule, isNonShiftPosition, isShiftPosition, getWorkingHours } from '@/lib/shift-utils';
 
 export async function GET(request: NextRequest) {
   try {
@@ -21,11 +21,123 @@ export async function GET(request: NextRequest) {
     }
     const scheduleStartDate = new Date(config.value + 'T00:00:00');
 
-    // Get workers for this shift
+    // Get holidays
+    const holidays = await db.holiday.findMany();
+    const holidaySet = new Set(holidays.map(h => h.date));
+
+    // ===== Режим руководителей (shiftNumber === 0) =====
+    if (shiftNumber === 0) {
+      // Получаем только руководителей без смены (Мастер ПУ, Начальник участка)
+      const workers = await db.worker.findMany({
+        where: { isActive: true, position: { in: ['master_pu', 'section_head'] } },
+        include: { grade: true, equipment: true, professions: true },
+        orderBy: [{ position: 'desc' }, { lastName: 'asc' }],
+      });
+
+      // Get attendance records for these workers
+      const workerIds = workers.map(w => w.id);
+      const attendance = await db.attendanceRecord.findMany({
+        where: {
+          workerId: { in: workerIds },
+          date: { gte: startDateStr, lte: endDateStr },
+        },
+      });
+
+      const attendanceMap = new Map<string, any>();
+      for (const a of attendance) {
+        const key = `${a.workerId}_${a.date}_${a.shiftType}`;
+        attendanceMap.set(key, a);
+      }
+
+      // Статусы, при которых работник фактически работает
+      const workingStatuses = new Set(['day', 'night', 'present']);
+
+      const timesheet = workers.map(worker => {
+        const days: any[] = [];
+        let totalHours = 0;
+        let totalNightHours = 0;
+        let totalHolidayHours = 0;
+
+        // Получаем индивидуальный график по должности
+        const nonShiftSchedule = getNonShiftSchedule(worker.position, year, month);
+
+        for (let day = 1; day <= daysInMonth; day++) {
+          const dateStr = `${monthStr}-${String(day).padStart(2, '0')}`;
+          const date = new Date(year, month - 1, day);
+          const isHoliday = holidaySet.has(dateStr);
+          const daySchedule = nonShiftSchedule.get(dateStr) || 'day_off';
+
+          // Для руководителей shiftType всегда 'day' (8-часовой рабочий день)
+          const shiftType = daySchedule === 'working' ? 'day' : null;
+
+          let attendanceRecord = null;
+          if (shiftType) {
+            attendanceRecord = attendanceMap.get(`${worker.id}_${dateStr}_${shiftType}`);
+          }
+
+          let status: string = daySchedule === 'working' ? 'day' : 'off';
+          if (attendanceRecord) {
+            status = attendanceRecord.status;
+          }
+
+          const workerIsWorking = workingStatuses.has(status);
+
+          // Часы — ТОЛЬКО из записей посещаемости
+          if (attendanceRecord && workerIsWorking) {
+            totalHours += attendanceRecord.hoursWorked || 0;
+            totalNightHours += attendanceRecord.nightHours || 0;
+            totalHolidayHours += attendanceRecord.holidayHours || 0;
+          }
+
+          days.push({
+            day,
+            date: dateStr,
+            phase: daySchedule === 'working' ? 'day' as const : 'off' as const,
+            shiftType,
+            status,
+            isHoliday,
+            isCombination: false,
+            attendanceRecord,
+          });
+        }
+
+        return {
+          workerId: worker.id,
+          lastName: worker.lastName,
+          firstName: worker.firstName,
+          patronymic: worker.patronymic,
+          gradeNumber: worker.gradeNumber,
+          position: worker.position || 'worker',
+          equipment: worker.equipment?.name || '',
+          professions: worker.professions?.map((p: any) => p.professionName) || [],
+          isCombination: false,
+          days,
+          totalHours,
+          totalNightHours,
+          totalHolidayHours,
+          totalCombinationHours: 0,
+        };
+      });
+
+      return NextResponse.json({
+        year,
+        month,
+        shiftNumber: 0,
+        shiftName: 'Руководители',
+        daysInMonth,
+        timesheet,
+      });
+    }
+
+    // ===== Обычный режим смены (shiftNumber 1-4) =====
+    // Получаем сменных работников (worker + master), исключаем руководителей без смены
     const workers = await db.worker.findMany({
-      where: { shiftNumber, isActive: true },
+      where: { shiftNumber, isActive: true, position: { notIn: ['master_pu', 'section_head'] } },
       include: { grade: true, equipment: true, professions: true },
-      orderBy: { lastName: 'asc' },
+      orderBy: [
+        { position: 'desc' },  // мастера сверху
+        { lastName: 'asc' },
+      ],
     });
 
     // Get attendance records
@@ -42,10 +154,6 @@ export async function GET(request: NextRequest) {
       const key = `${a.workerId}_${a.date}_${a.shiftType}`;
       attendanceMap.set(key, a);
     }
-
-    // Get holidays
-    const holidays = await db.holiday.findMany();
-    const holidaySet = new Set(holidays.map(h => h.date));
 
     // Build schedule for this shift
     const schedule = getMonthSchedule(shiftNumber, year, month, scheduleStartDate);
