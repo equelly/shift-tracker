@@ -75,6 +75,7 @@ export function TimesheetView() {
   const [absenceReason, setAbsenceReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [holidays, setHolidays] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
 
   const fetchTimesheet = useCallback(async () => {
     try {
@@ -175,7 +176,7 @@ export function TimesheetView() {
   };
 
   const positionLabel = (p: string) =>
-    p === 'master' ? 'Мастер' : p === 'master_pu' ? 'м.ПУ' : p === 'section_head' ? 'Н.уч' : '';
+    p === 'master' ? 'Мастер' : p === 'master_pu' ? 'М.ПУ' : p === 'section_head' ? 'НУ' : '';
 
   const positionColor = (p: string) =>
     p === 'master' ? 'bg-amber-600' : p === 'master_pu' ? 'bg-blue-600' : p === 'section_head' ? 'bg-indigo-600' : '';
@@ -242,6 +243,34 @@ export function TimesheetView() {
                 </SelectContent>
               </Select>
             </div>
+            <Button
+              onClick={async () => {
+                setExporting(true);
+                try {
+                  const res = await fetch(`/api/reports/timesheet-export?year=${year}&month=${month}`);
+                  if (!res.ok) throw new Error('Export failed');
+                  const blob = await res.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  const disposition = res.headers.get('Content-Disposition');
+                  const match = disposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                  a.download = match ? decodeURIComponent(match[1].replace(/['"]/g, '')) : `Табель_${getMonthName(month)}_${year}.xlsx`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                } catch (err) {
+                  console.error('Export error:', err);
+                }
+                setExporting(false);
+              }}
+              disabled={exporting}
+              variant="outline"
+              className="w-full sm:w-auto"
+            >
+              {exporting ? 'Экспорт...' : '📥 Excel (по оборуд.)'}
+            </Button>
           </div>
         </CardContent>
       </Card>
