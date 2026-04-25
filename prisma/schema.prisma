@@ -15,7 +15,6 @@ model User {
   role          String        @default("worker") // admin, master, brigadier, worker
   workerId      String?       @unique
   worker        Worker?       @relation(fields: [workerId], references: [id])
-  mustChangePassword Boolean  @default(false)
   shiftMaster          Shift?              @relation("ShiftMaster")
   auditLogs            AuditLog[]          @relation("UserAuditLogs")
   notifications        Notification[]
@@ -65,8 +64,8 @@ model Worker {
   patronymic               String
   gradeNumber              Int
   grade                    Grade    @relation(fields: [gradeNumber], references: [number])
-  shiftNumber              Int
-  shift                    Shift    @relation(fields: [shiftNumber], references: [number])
+  shiftNumber              Int?
+  shift                    Shift?   @relation(fields: [shiftNumber], references: [number])
   equipmentId              Int?
   equipment                Equipment? @relation(fields: [equipmentId], references: [id])
   position                 String   @default("worker") // worker, master, master_pu, section_head
@@ -167,8 +166,6 @@ model TransferOrderItem {
   toEquipment     Equipment?    @relation("ToEquipment", fields: [toEquipmentId], references: [id])
   fromShiftNumber Int?
   toShiftNumber   Int?
-  fromGradeNumber Int?
-  toGradeNumber   Int?
   executed        Boolean       @default(false)  // выполнен ли перенос в карточке работника
   createdAt       DateTime      @default(now())
 }

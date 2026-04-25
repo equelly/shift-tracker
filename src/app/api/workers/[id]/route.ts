@@ -45,7 +45,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         firstName: body.firstName,
         patronymic: body.patronymic,
         gradeNumber: body.gradeNumber,
-        shiftNumber: body.shiftNumber,
+        shiftNumber: body.shiftNumber || null,
         equipmentId: body.equipmentId || null,
         position: body.position || 'worker',
         isActive: body.isActive ?? true,

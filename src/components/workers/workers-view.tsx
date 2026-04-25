@@ -119,7 +119,7 @@ export function WorkersView() {
       firstName: w.firstName,
       patronymic: w.patronymic,
       gradeNumber: w.gradeNumber,
-      shiftNumber: w.shiftNumber,
+      shiftNumber: w.shiftNumber ?? 0,
       equipmentId: w.equipmentId ? String(w.equipmentId) : '',
       position: w.position || 'worker',
     });
@@ -195,7 +195,6 @@ export function WorkersView() {
                 <th className="px-4 py-3 text-center font-medium">Смена</th>
                 <th className="px-4 py-3 text-left font-medium">Оборудование</th>
                 <th className="px-4 py-3 text-left font-medium">Доп. профессии</th>
-                <th className="px-4 py-3 text-center font-medium">Статус</th>
                 {canEdit && <th className="px-4 py-3 text-center font-medium">Действия</th>}
               </tr>
             </thead>
@@ -215,18 +214,13 @@ export function WorkersView() {
                     )}
                   </td>
                   <td className="px-4 py-2 text-center">
-                    <Badge className={shiftBadgeColor(w.shiftNumber)}>
-                      Смена {w.shiftNumber}
+                    <Badge className={!w.shiftNumber ? 'bg-orange-600' : shiftBadgeColor(w.shiftNumber)}>
+                      {!w.shiftNumber ? 'Руководители' : `Смена ${w.shiftNumber}`}
                     </Badge>
                   </td>
                   <td className="px-4 py-2 text-gray-600">{w.equipment?.name || '—'}</td>
                   <td className="px-4 py-2 text-gray-500 text-xs">
                     {w.professions.map(p => p.professionName).join(', ') || '—'}
-                  </td>
-                  <td className="px-4 py-2 text-center">
-                    <Badge variant={w.isActive ? 'default' : 'secondary'} className={w.isActive ? 'bg-emerald-600' : 'bg-gray-400'}>
-                      {w.isActive ? 'Работает' : 'Уволен'}
-                    </Badge>
                   </td>
                   {canEdit && (
                     <td className="px-4 py-2 text-center">
@@ -241,7 +235,7 @@ export function WorkersView() {
                 </tr>
               ))}
               {workers.length === 0 && (
-                <tr><td colSpan={7} className="text-center py-8 text-gray-500">Работники не найдены</td></tr>
+                <tr><td colSpan={6} className="text-center py-8 text-gray-500">Работники не найдены</td></tr>
               )}
             </tbody>
           </table>
@@ -262,14 +256,9 @@ export function WorkersView() {
             className="cursor-pointer active:bg-slate-50 transition-colors"
           >
             <CardContent className="p-4 space-y-3">
-              {/* Header: ФИО + Статус */}
-              <div className="flex items-start justify-between gap-2">
-                <div className="font-medium text-base leading-tight">
-                  {w.lastName} {w.firstName} {w.patronymic}
-                </div>
-                <Badge variant={w.isActive ? 'default' : 'secondary'} className={w.isActive ? 'bg-emerald-600' : 'bg-gray-400'}>
-                  {w.isActive ? 'Работает' : 'Уволен'}
-                </Badge>
+              {/* Header: ФИО */}
+              <div className="font-medium text-base leading-tight">
+                {w.lastName} {w.firstName} {w.patronymic}
               </div>
 
               {/* Info chips */}
@@ -281,8 +270,8 @@ export function WorkersView() {
                 ) : (
                   <Badge variant="outline">{w.gradeNumber} разр.</Badge>
                 )}
-                <Badge className={shiftBadgeColor(w.shiftNumber)}>
-                  Смена {w.shiftNumber}
+                <Badge className={!w.shiftNumber ? 'bg-orange-600' : shiftBadgeColor(w.shiftNumber)}>
+                  {!w.shiftNumber ? 'Руководители' : `Смена ${w.shiftNumber}`}
                 </Badge>
               </div>
 
@@ -351,6 +340,7 @@ export function WorkersView() {
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {[1,2,3,4].map(s => <SelectItem key={s} value={String(s)}>Смена {s}</SelectItem>)}
+                    <SelectItem value="0">Руководители</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -424,7 +414,7 @@ export function WorkersView() {
                 <div><span className="text-gray-500">Разряд:</span> <strong>{showDetail.gradeNumber} ({showDetail.grade?.name})</strong></div>
                 <div><span className="text-gray-500">Должность:</span> <strong>{showDetail.position === 'master' ? 'Мастер' : showDetail.position === 'master_pu' ? 'Мастер ПУ' : showDetail.position === 'section_head' ? 'Начальник участка' : 'Работник'}</strong></div>
                 <div><span className="text-gray-500">Ставка:</span> <strong>{showDetail.grade?.hourlyRate} руб/ч</strong></div>
-                <div><span className="text-gray-500">Смена:</span> <strong>Смена {showDetail.shiftNumber}</strong></div>
+                <div><span className="text-gray-500">Смена:</span> <strong>{!showDetail.shiftNumber ? 'Руководители' : `Смена ${showDetail.shiftNumber}`}</strong></div>
                 <div><span className="text-gray-500">Оборудование:</span> <strong>{showDetail.equipment?.name || '—'}</strong></div>
               </div>
               {showDetail.professions.length > 0 && (

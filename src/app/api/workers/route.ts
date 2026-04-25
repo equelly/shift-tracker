@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
         firstName,
         patronymic,
         gradeNumber,
-        shiftNumber,
+        shiftNumber: shiftNumber || null,
         equipmentId: equipmentId || null,
         position: position || 'worker',
         isActive: true,
