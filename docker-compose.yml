@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  shift-tracker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shift-tracker
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=file:/app/data/custom.db
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-change-this-secret-in-production}
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+    volumes:
+      # ===== ПОСТОЯННОЕ ХРАНИЛИЩЕ =====
+      # База данных SQLite хранится в этом volume.
+      # Она ПЕРЕЖИВАЕТ пересборку контейнера, удаление, обновление образа.
+      # Данные НЕ ПРОПАДУТ при docker-compose down / up.
+      - shift-tracker-data:/app/data
+
+volumes:
+  shift-tracker-data:
+    # Именованный volume — управляется Docker.
+    # Сохраняется даже при docker-compose down (удаляется только при down -v).
+    name: shift-tracker-data

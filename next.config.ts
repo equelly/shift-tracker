@@ -5,6 +5,8 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: true,
+  output: 'standalone',
+  serverExternalPackages: ['exceljs', 'better-sqlite3'],
   allowedDevOrigins: [
     '.space.chatglm.site',
     '.space.z.ai',
