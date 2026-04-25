@@ -198,16 +198,29 @@ export async function GET(request: NextRequest) {
     // Transferred workers (now in a different shift) keep their hours from this shift.
 
     // 1. Collect all (gradeNumber, position) periods per worker
+    //    Важно: старые записи с дефолтными gradeNumber=0, position="worker"
+    //    не должны создавать фантомную подстроку, если текущая должность —
+    //    не worker. Такие записи относятся к текущему периоду.
     const workerPeriods = new Map<string, Set<string>>();
     for (const worker of workers) {
       const periods = new Set<string>();
-      // Current period
-      periods.add(`${worker.gradeNumber}_${worker.position || 'worker'}`);
+      const currentPeriod = `${worker.gradeNumber}_${worker.position || 'worker'}`;
+      periods.add(currentPeriod);
       // Periods from attendance records
       for (const a of attendance) {
         if (a.workerId === worker.id) {
-          const g = a.gradeNumber || worker.gradeNumber;
-          const p = a.position || worker.position || 'worker';
+          let g = a.gradeNumber;
+          let p = a.position;
+          // Если запись имеет дефолтные значения (gradeNumber=0, position="worker"),
+          // а текущая должность работника — не worker, значит это старая запись
+          // до внедрения многострочного табеля. Относим её к текущему периоду.
+          if (g === 0 && p === 'worker' && worker.position !== 'worker') {
+            g = worker.gradeNumber;
+            p = worker.position;
+          }
+          // Fallback для пустых значений
+          if (!g) g = worker.gradeNumber;
+          if (!p) p = worker.position || 'worker';
           periods.add(`${g}_${p}`);
         }
       }
@@ -226,8 +239,9 @@ export async function GET(request: NextRequest) {
       const isTransferred = !isLeaders && worker.shiftNumber !== shiftNum;
 
       // For leaders, get their personal non-shift schedule
+      // Все работники на вкладке «Руководители» получают 8-часовой график
       let leaderSchedule: Map<string, any> | null = null;
-      if (isLeaders && isNonShiftPosition(worker.position)) {
+      if (isLeaders) {
         leaderSchedule = getNonShiftSchedule(worker.position, year, month);
       }
 
@@ -252,7 +266,9 @@ export async function GET(request: NextRequest) {
 
           if (isLeaders && leaderSchedule) {
             const daySchedule = leaderSchedule.get(dateStr);
-            phase = daySchedule === 'working' ? 'working' : 'off';
+            // Используем 'day' вместо 'working', чтобы фронтенд корректно
+            // отображал рабочие дни руководителей как активные ячейки «Д»
+            phase = daySchedule === 'working' ? 'day' : 'off';
             shiftType = daySchedule === 'working' ? 'day' : null;
           } else {
             phase = schedule.get(dateStr) || 'off';
@@ -302,8 +318,14 @@ export async function GET(request: NextRequest) {
           let isOtherRow = false;
           if (hasMultipleRows) {
             if (attendanceRecord) {
-              const recordGrade = attendanceRecord.gradeNumber || 0;
-              const recordPosition = attendanceRecord.position || 'worker';
+              let recordGrade = attendanceRecord.gradeNumber || 0;
+              let recordPosition = attendanceRecord.position || 'worker';
+              // Старые записи с дефолтными значениями относим к текущему периоду
+              // (аналогично логике при сборке periods выше)
+              if (recordGrade === 0 && recordPosition === 'worker' && worker.position !== 'worker') {
+                recordGrade = worker.gradeNumber;
+                recordPosition = worker.position;
+              }
               if (recordGrade !== gradeNumber || recordPosition !== position) {
                 isOtherRow = true;
               }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { calculateNightHours } from '@/lib/shift-utils';
+import { calculateNightHours, isNonShiftPosition } from '@/lib/shift-utils';
 import { getAuditUser } from '@/lib/auth-guard';
 
 export async function POST(request: NextRequest) {
@@ -33,12 +33,6 @@ export async function POST(request: NextRequest) {
       let nightHours = 0;
       let holidayHours = 0;
 
-      if (status === 'present') {
-        hoursWorked = 12;
-        nightHours = calculateNightHours(shiftType);
-        if (holiday) holidayHours = 12;
-      }
-
       // Get worker's current grade/position for multi-row timesheet
       let currentGradeNumber = 0;
       let currentPosition = 'worker';
@@ -50,6 +44,13 @@ export async function POST(request: NextRequest) {
         currentGradeNumber = workerData?.gradeNumber ?? 0;
         currentPosition = workerData?.position ?? 'worker';
       } catch {}
+
+      if (status === 'present') {
+        // Несменные руководители работают 8ч, сменные — 12ч
+        hoursWorked = isNonShiftPosition(currentPosition) ? 8 : 12;
+        nightHours = calculateNightHours(shiftType);
+        if (holiday) holidayHours = hoursWorked;
+      }
 
       try {
         const record = await db.attendanceRecord.upsert({
