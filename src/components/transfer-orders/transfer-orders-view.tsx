@@ -289,6 +289,7 @@ export function TransferOrdersView() {
   const [orders, setOrders] = useState<TransferOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterLastName, setFilterLastName] = useState<string>('');
 
   // Данные для формы
   const [workers, setWorkers] = useState<Worker[]>([]);
@@ -454,6 +455,12 @@ export function TransferOrdersView() {
           <p className="text-sm text-gray-500">Управление переводами работников: смена, оборудование, разряд, должность</p>
         </div>
         <div className="flex flex-col sm:flex-row w-full sm:w-auto items-stretch sm:items-center gap-3">
+          <Input
+            placeholder="Поиск по фамилии..."
+            value={filterLastName}
+            onChange={e => setFilterLastName(e.target.value)}
+            className="w-full sm:w-48 h-9 text-sm"
+          />
           <Select value={filterStatus} onValueChange={setFilterStatus}>
             <SelectTrigger className="w-full sm:w-40 h-9 text-sm">
               <SelectValue />
@@ -486,67 +493,91 @@ export function TransferOrdersView() {
         </Card>
       ) : (
         <div className="space-y-3">
-          {orders.map(order => {
-            const statusInfo = STATUS_MAP[order.status] || STATUS_MAP.draft;
-            const effectiveDates = [...new Set(order.items.map(i => i.effectiveDate))].sort();
-            const hasOneShift = order.items.some(i => i.duration === 'one_shift');
-            const pendingCount = order.items.filter(i => !i.executed).length;
+          {(() => {
+            const filtered = filterLastName.trim()
+              ? orders.filter(order => {
+                  const search = filterLastName.trim().toLowerCase();
+                  return order.items.some(item =>
+                    item.worker.lastName.toLowerCase().includes(search) ||
+                    item.worker.firstName.toLowerCase().includes(search) ||
+                    item.worker.patronymic.toLowerCase().includes(search)
+                  );
+                })
+              : orders;
             return (
-              <Card
-                key={order.id}
-                className="cursor-pointer hover:shadow-md transition-shadow"
-                onClick={() => setViewOrder(order)}
-              >
-                <CardContent className="p-4">
-                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex flex-wrap items-center gap-2 sm:gap-4">
-                        <div>
-                          <p className="font-bold text-lg">{order.orderNumber}</p>
-                          <p className="text-sm text-gray-500">от {order.orderDate}</p>
+              <>
+                {filtered.map(order => {
+                  const statusInfo = STATUS_MAP[order.status] || STATUS_MAP.draft;
+                  // Собираем даты вступления
+                  const effectiveDates = [...new Set(order.items.map(i => i.effectiveDate))].sort();
+                  const hasOneShift = order.items.some(i => i.duration === 'one_shift');
+                  const pendingCount = order.items.filter(i => !i.executed).length;
+                  return (
+                    <Card
+                      key={order.id}
+                      className="cursor-pointer hover:shadow-md transition-shadow"
+                      onClick={() => setViewOrder(order)}
+                    >
+                      <CardContent className="p-4">
+                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2 sm:gap-4">
+                              <div>
+                                <p className="font-bold text-lg">{order.orderNumber}</p>
+                                <p className="text-sm text-gray-500">от {order.orderDate}</p>
+                              </div>
+                              <Badge className={statusInfo.color}>{statusInfo.label}</Badge>
+                              {pendingCount > 0 && order.status === 'approved' && (
+                                <Badge className="bg-orange-100 text-orange-800 border-orange-300">
+                                  {pendingCount} ожидает
+                                </Badge>
+                              )}
+                              {hasOneShift && (
+                                <Badge variant="outline" className="text-xs">1 смена</Badge>
+                              )}
+                            </div>
+                            {/* Фамилии работников */}
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {order.items.map(item => (
+                                <span
+                                  key={item.id}
+                                  className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                    item.revertedAt
+                                      ? 'bg-gray-100 text-gray-500 line-through'
+                                      : item.executed
+                                        ? 'bg-green-50 text-green-700'
+                                        : 'bg-blue-50 text-blue-700'
+                                  }`}
+                                >
+                                  {item.worker.lastName} {item.worker.firstName[0]}.{item.worker.patronymic[0]}.
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex sm:flex-col items-center sm:items-end justify-between sm:text-right gap-2 sm:gap-0 flex-shrink-0">
+                            <p className="text-sm">
+                              <span className="text-gray-500">Строк:</span>{' '}
+                              <span className="font-semibold">{order.items.length}</span>
+                            </p>
+                            <p className="text-xs text-gray-500">
+                              С {effectiveDates[0]}{effectiveDates.length > 1 ? ' ...' : ''}
+                            </p>
+                          </div>
                         </div>
-                        <Badge className={statusInfo.color}>{statusInfo.label}</Badge>
-                        {pendingCount > 0 && order.status === 'approved' && (
-                          <Badge className="bg-orange-100 text-orange-800 border-orange-300">
-                            {pendingCount} ожидает
-                          </Badge>
-                        )}
-                        {hasOneShift && (
-                          <Badge variant="outline" className="text-xs">1 смена</Badge>
-                        )}
-                      </div>
-                      {/* Фамилии работников */}
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {order.items.map(item => (
-                          <span
-                            key={item.id}
-                            className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                              item.revertedAt
-                                ? 'bg-gray-100 text-gray-500 line-through'
-                                : item.executed
-                                  ? 'bg-green-50 text-green-700'
-                                  : 'bg-blue-50 text-blue-700'
-                            }`}
-                          >
-                            {item.worker.lastName} {item.worker.firstName[0]}.{item.worker.patronymic[0]}.
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="flex sm:flex-col items-center sm:items-end justify-between sm:text-right gap-2 sm:gap-0 flex-shrink-0">
-                      <p className="text-sm">
-                        <span className="text-gray-500">Строк:</span>{' '}
-                        <span className="font-semibold">{order.items.length}</span>
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        С {effectiveDates[0]}{effectiveDates.length > 1 ? ' ...' : ''}
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+                {filtered.length === 0 && filterLastName && (
+                  <Card>
+                    <CardContent className="py-8 text-center text-gray-500">
+                      По запросу &laquo;{filterLastName}&raquo; распоряжений не найдено
+                    </CardContent>
+                  </Card>
+                )}
+              </>
             );
-          })}
+          })()}
         </div>
       )}
 

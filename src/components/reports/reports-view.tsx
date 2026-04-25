@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { getMonthName } from '@/lib/shift-utils';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { getMonthName, ATTENDANCE_STATUS } from '@/lib/shift-utils';
 
 interface ReportWorker {
   workerId: string;
@@ -30,6 +32,58 @@ interface ReportWorker {
   dayOffDays: number;
 }
 
+interface DailyWorker {
+  workerId: string;
+  lastName: string;
+  firstName: string;
+  patronymic: string;
+  gradeNumber: number;
+  gradeName: string;
+  shiftNumber: number | null;
+  shiftName: string;
+  position: string;
+  equipmentName: string;
+  status: string;
+  hoursWorked: number;
+  nightHours: number;
+  shiftType: string | null;
+  professions: string[];
+}
+
+interface DailySummary {
+  total: number;
+  present: number;
+  absent: number;
+  sick: number;
+  vacation: number;
+  dayOff: number;
+  transfer: number;
+  stateDuty: number;
+  collectiveAgreement: number;
+  substitution: number;
+  noData: number;
+}
+
+const POSITION_MAP: Record<string, string> = {
+  worker: 'Работник',
+  master: 'Мастер',
+  master_pu: 'Мастер ПУ',
+  section_head: 'Начальник участка',
+};
+
+const STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  present:              { label: 'Явка',            color: 'bg-green-100 text-green-800' },
+  absent:               { label: 'Неявка',          color: 'bg-red-100 text-red-800' },
+  sick:                 { label: 'Больничный',      color: 'bg-yellow-100 text-yellow-800' },
+  vacation:             { label: 'Отпуск',          color: 'bg-cyan-100 text-cyan-800' },
+  day_off:              { label: 'Отгул',           color: 'bg-orange-100 text-orange-800' },
+  transfer:             { label: 'Перевод',         color: 'bg-purple-100 text-purple-800' },
+  state_duty:           { label: 'Гос. обязанности', color: 'bg-indigo-100 text-indigo-800' },
+  collective_agreement: { label: 'Колдоговор',      color: 'bg-pink-100 text-pink-800' },
+  substitution:         { label: 'Подмена',         color: 'bg-teal-100 text-teal-800' },
+  no_data:              { label: 'Нет данных',      color: 'bg-gray-100 text-gray-500' },
+};
+
 export function ReportsView() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -37,9 +91,18 @@ export function ReportsView() {
   const [shiftNumber, setShiftNumber] = useState('0');
   const [workers, setWorkers] = useState<ReportWorker[]>([]);
   const [loading, setLoading] = useState(false);
-  const [activeReport, setActiveReport] = useState<'monthly' | 'substitutions' | 'professions'>('monthly');
+  const [activeReport, setActiveReport] = useState<'monthly' | 'daily' | 'substitutions' | 'professions'>('monthly');
 
-  const fetchReport = useCallback(async () => {
+  // Daily report state
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const [dailyDate, setDailyDate] = useState(todayStr);
+  const [dailyShiftNumber, setDailyShiftNumber] = useState('0');
+  const [dailyWorkers, setDailyWorkers] = useState<DailyWorker[]>([]);
+  const [dailySummary, setDailySummary] = useState<DailySummary | null>(null);
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyStatusFilter, setDailyStatusFilter] = useState('all');
+
+  const fetchReport = async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ year: String(year), month: String(month) });
@@ -52,7 +115,24 @@ export function ReportsView() {
       console.error('Error fetching report:', err);
     }
     setLoading(false);
-  }, [year, month, shiftNumber]);
+  };
+
+  const fetchDailyReport = async () => {
+    if (!dailyDate) return;
+    setDailyLoading(true);
+    try {
+      const params = new URLSearchParams({ date: dailyDate });
+      if (dailyShiftNumber !== '0') params.set('shiftNumber', dailyShiftNumber);
+
+      const res = await fetch(`/api/reports/daily?${params}`);
+      const data = await res.json();
+      setDailyWorkers(data.workers || []);
+      setDailySummary(data.summary || null);
+    } catch (err) {
+      console.error('Error fetching daily report:', err);
+    }
+    setDailyLoading(false);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -74,6 +154,20 @@ export function ReportsView() {
     vacationDays: acc.vacationDays + w.vacationDays,
   }), { totalHours: 0, nightHours: 0, holidayHours: 0, presentDays: 0, absentDays: 0, sickDays: 0, vacationDays: 0 });
 
+  // Filtered daily workers by status
+  const filteredDailyWorkers = dailyStatusFilter === 'all'
+    ? dailyWorkers
+    : dailyWorkers.filter(w => w.status === dailyStatusFilter);
+
+  // Format date for display
+  const formatDailyDate = (dateStr: string) => {
+    if (!dateStr) return '';
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const date = new Date(y, m - 1, d);
+    const dayNames = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+    return `${d} ${getMonthName(m).toLowerCase()} ${y}, ${dayNames[date.getDay()]}`;
+  };
+
   return (
     <div className="space-y-4">
       {/* Controls */}
@@ -84,37 +178,65 @@ export function ReportsView() {
               <SelectTrigger className="w-full md:w-48"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="monthly">Помесячный отчёт</SelectItem>
+                <SelectItem value="daily">Статус на дату</SelectItem>
                 <SelectItem value="substitutions">Подмены</SelectItem>
                 <SelectItem value="professions">Совмещение профессий</SelectItem>
               </SelectContent>
             </Select>
-            <Select value={String(year)} onValueChange={v => setYear(parseInt(v))}>
-              <SelectTrigger className="w-full md:w-24"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="2025">2025</SelectItem>
-                <SelectItem value="2026">2026</SelectItem>
-                <SelectItem value="2027">2027</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={String(month)} onValueChange={v => setMonth(parseInt(v))}>
-              <SelectTrigger className="w-full md:w-36"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
-                  <SelectItem key={m} value={String(m)}>{getMonthName(m)}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={shiftNumber} onValueChange={setShiftNumber}>
-              <SelectTrigger className="w-full md:w-36"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="0">Все смены</SelectItem>
-                <SelectItem value="1">Смена 1</SelectItem>
-                <SelectItem value="2">Смена 2</SelectItem>
-                <SelectItem value="3">Смена 3</SelectItem>
-                <SelectItem value="4">Смена 4</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button onClick={fetchReport} className="bg-emerald-600 hover:bg-emerald-700 w-full md:w-auto">Показать</Button>
+
+            {activeReport === 'monthly' && (
+              <>
+                <Select value={String(year)} onValueChange={v => setYear(parseInt(v))}>
+                  <SelectTrigger className="w-full md:w-24"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="2025">2025</SelectItem>
+                    <SelectItem value="2026">2026</SelectItem>
+                    <SelectItem value="2027">2027</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={String(month)} onValueChange={v => setMonth(parseInt(v))}>
+                  <SelectTrigger className="w-full md:w-36"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                      <SelectItem key={m} value={String(m)}>{getMonthName(m)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select value={shiftNumber} onValueChange={setShiftNumber}>
+                  <SelectTrigger className="w-full md:w-36"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">Все смены</SelectItem>
+                    <SelectItem value="1">Смена 1</SelectItem>
+                    <SelectItem value="2">Смена 2</SelectItem>
+                    <SelectItem value="3">Смена 3</SelectItem>
+                    <SelectItem value="4">Смена 4</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button onClick={fetchReport} className="bg-emerald-600 hover:bg-emerald-700 w-full md:w-auto">Показать</Button>
+              </>
+            )}
+
+            {activeReport === 'daily' && (
+              <>
+                <Input
+                  type="date"
+                  value={dailyDate}
+                  onChange={e => setDailyDate(e.target.value)}
+                  className="w-full md:w-40 h-9 text-sm"
+                />
+                <Select value={dailyShiftNumber} onValueChange={setDailyShiftNumber}>
+                  <SelectTrigger className="w-full md:w-36"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">Все смены</SelectItem>
+                    <SelectItem value="1">Смена 1</SelectItem>
+                    <SelectItem value="2">Смена 2</SelectItem>
+                    <SelectItem value="3">Смена 3</SelectItem>
+                    <SelectItem value="4">Смена 4</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button onClick={fetchDailyReport} className="bg-emerald-600 hover:bg-emerald-700 w-full md:w-auto">Показать</Button>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -287,6 +409,167 @@ export function ReportsView() {
         </Card>
       )}
 
+      {/* Daily status report */}
+      {activeReport === 'daily' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Статус на {formatDailyDate(dailyDate)}</CardTitle>
+          </CardHeader>
+          <CardContent className="p-3 md:p-0">
+            {dailyLoading ? (
+              <div className="text-center py-8 text-gray-500">Загрузка...</div>
+            ) : dailyWorkers.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">Нажмите «Показать» для загрузки данных</div>
+            ) : (
+              <>
+                {/* Summary cards */}
+                {dailySummary && (
+                  <div className="px-3 md:px-0 mb-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-2.5 text-center">
+                        <div className="text-2xl font-bold text-green-700">{dailySummary.present}</div>
+                        <div className="text-xs text-green-600">Явка</div>
+                      </div>
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-2.5 text-center">
+                        <div className="text-2xl font-bold text-red-700">{dailySummary.absent}</div>
+                        <div className="text-xs text-red-600">Неявка</div>
+                      </div>
+                      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-2.5 text-center">
+                        <div className="text-2xl font-bold text-yellow-700">{dailySummary.sick}</div>
+                        <div className="text-xs text-yellow-600">Больничный</div>
+                      </div>
+                      <div className="bg-cyan-50 border border-cyan-200 rounded-lg p-2.5 text-center">
+                        <div className="text-2xl font-bold text-cyan-700">{dailySummary.vacation}</div>
+                        <div className="text-xs text-cyan-600">Отпуск</div>
+                      </div>
+                      <div className="bg-orange-50 border border-orange-200 rounded-lg p-2.5 text-center">
+                        <div className="text-2xl font-bold text-orange-700">{dailySummary.dayOff}</div>
+                        <div className="text-xs text-orange-600">Отгул</div>
+                      </div>
+                      <div className="bg-purple-50 border border-purple-200 rounded-lg p-2.5 text-center">
+                        <div className="text-2xl font-bold text-purple-700">{dailySummary.transfer}</div>
+                        <div className="text-xs text-purple-600">Перевод</div>
+                      </div>
+                      <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-2.5 text-center">
+                        <div className="text-2xl font-bold text-indigo-700">{dailySummary.stateDuty}</div>
+                        <div className="text-xs text-indigo-600">Гос.об.</div>
+                      </div>
+                      <div className="bg-pink-50 border border-pink-200 rounded-lg p-2.5 text-center">
+                        <div className="text-2xl font-bold text-pink-700">{dailySummary.collectiveAgreement}</div>
+                        <div className="text-xs text-pink-600">Колдоговор</div>
+                      </div>
+                      <div className="bg-teal-50 border border-teal-200 rounded-lg p-2.5 text-center">
+                        <div className="text-2xl font-bold text-teal-700">{dailySummary.substitution}</div>
+                        <div className="text-xs text-teal-600">Подмена</div>
+                      </div>
+                      <div className="bg-gray-50 border border-gray-200 rounded-lg p-2.5 text-center">
+                        <div className="text-2xl font-bold text-gray-500">{dailySummary.noData}</div>
+                        <div className="text-xs text-gray-400">Нет данных</div>
+                      </div>
+                    </div>
+                    <div className="mt-2 text-sm text-gray-500">
+                      Всего работников: <span className="font-semibold">{dailySummary.total}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Status filter */}
+                <div className="px-3 md:px-0 mb-3">
+                  <Select value={dailyStatusFilter} onValueChange={setDailyStatusFilter}>
+                    <SelectTrigger className="w-full md:w-52 h-9 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Все статусы</SelectItem>
+                      <SelectItem value="present">Явка</SelectItem>
+                      <SelectItem value="absent">Неявка</SelectItem>
+                      <SelectItem value="sick">Больничный</SelectItem>
+                      <SelectItem value="vacation">Отпуск</SelectItem>
+                      <SelectItem value="day_off">Отгул</SelectItem>
+                      <SelectItem value="transfer">Перевод</SelectItem>
+                      <SelectItem value="state_duty">Гос. обязанности</SelectItem>
+                      <SelectItem value="collective_agreement">Колдоговор</SelectItem>
+                      <SelectItem value="substitution">Подмена</SelectItem>
+                      <SelectItem value="no_data">Нет данных</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {dailyStatusFilter !== 'all' && (
+                    <span className="ml-2 text-sm text-gray-500">
+                      Найдено: {filteredDailyWorkers.length}
+                    </span>
+                  )}
+                </div>
+
+                {/* Mobile card layout */}
+                <div className="md:hidden space-y-2 px-3">
+                  {filteredDailyWorkers.map((w) => {
+                    const statusInfo = STATUS_LABELS[w.status] || STATUS_LABELS.no_data;
+                    return (
+                      <div key={w.workerId} className="border rounded-lg p-3 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-medium text-sm truncate">
+                            {w.lastName} {w.firstName[0]}. {w.patronymic[0]}.
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {w.shiftNumber != null ? `См.${w.shiftNumber}` : 'Рук.'} · {w.gradeNumber} разр. · {POSITION_MAP[w.position] || w.position}
+                          </div>
+                        </div>
+                        <Badge className={`${statusInfo.color} whitespace-nowrap`}>{statusInfo.label}</Badge>
+                      </div>
+                    );
+                  })}
+                  {filteredDailyWorkers.length === 0 && (
+                    <div className="text-center py-8 text-gray-500">Нет работников с выбранным статусом</div>
+                  )}
+                </div>
+
+                {/* Desktop table layout */}
+                <div className="hidden md:block md:overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-slate-100">
+                        <th className="px-3 py-2 text-left font-medium">ФИО</th>
+                        <th className="px-3 py-2 text-center font-medium">Смена</th>
+                        <th className="px-3 py-2 text-center font-medium">Разряд</th>
+                        <th className="px-3 py-2 text-left font-medium">Должность</th>
+                        <th className="px-3 py-2 text-left font-medium">Оборудование</th>
+                        <th className="px-3 py-2 text-center font-medium">Статус</th>
+                        <th className="px-3 py-2 text-center font-medium">Часов</th>
+                        <th className="px-3 py-2 text-center font-medium">Ночных</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredDailyWorkers.map((w, idx) => {
+                        const statusInfo = STATUS_LABELS[w.status] || STATUS_LABELS.no_data;
+                        return (
+                          <tr key={w.workerId} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                            <td className="px-3 py-2 font-medium">{w.lastName} {w.firstName[0]}. {w.patronymic[0]}.</td>
+                            <td className="px-3 py-2 text-center">{w.shiftNumber != null ? `См.${w.shiftNumber}` : 'Рук.'}</td>
+                            <td className="px-3 py-2 text-center">{w.gradeNumber}</td>
+                            <td className="px-3 py-2 text-sm">{POSITION_MAP[w.position] || w.position}</td>
+                            <td className="px-3 py-2 text-sm text-gray-600">{w.equipmentName}</td>
+                            <td className="px-3 py-2 text-center">
+                              <Badge className={statusInfo.color}>{statusInfo.label}</Badge>
+                            </td>
+                            <td className="px-3 py-2 text-center">{w.hoursWorked || '—'}</td>
+                            <td className="px-3 py-2 text-center">{w.nightHours || '—'}</td>
+                          </tr>
+                        );
+                      })}
+                      {filteredDailyWorkers.length === 0 && (
+                        <tr>
+                          <td colSpan={8} className="text-center py-8 text-gray-500">Нет работников с выбранным статусом</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Substitutions report */}
       {activeReport === 'substitutions' && (
         <Card>
@@ -362,17 +645,5 @@ export function ReportsView() {
         </Card>
       )}
     </div>
-  );
-}
-
-function Button({ children, onClick, className = '', disabled = false }: { children: React.ReactNode; onClick?: () => void; className?: string; disabled?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}
-    >
-      {children}
-    </button>
   );
 }
