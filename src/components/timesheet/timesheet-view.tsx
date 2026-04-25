@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -17,6 +17,9 @@ interface TimesheetDay {
   status: string;
   isHoliday: boolean;
   isCombination: boolean;
+  isOtherRow: boolean;          // день относится к другой строке (другой разряд/должность)
+  isTransferredDay: boolean;    // работник уже переведён в другую смену (день после даты перевода)
+  isBeforeTransferIn: boolean;  // работник ещё не был в этой смене (день до даты перевода)
   attendanceRecord: any | null;
 }
 
@@ -30,6 +33,8 @@ interface TimesheetWorker {
   equipment: string;
   professions: string[];
   isCombination: boolean;
+  isSubRow: boolean;         // у работника несколько строк
+  isTransferred: number | false;    // номер смены, куда переведён работник (или false)
   days: TimesheetDay[];
   totalHours: number;
   totalNightHours: number;
@@ -46,6 +51,13 @@ interface CellEdit {
   day: number;
 }
 
+const POSITION_MAP: Record<string, string> = {
+  worker: 'Работник',
+  master: 'Мастер',
+  master_pu: 'Мастер ПУ',
+  section_head: 'Начальник участка',
+};
+
 export function TimesheetView() {
   const { data: session } = useSession();
   const userRole = (session?.user as any)?.role || 'worker';
@@ -53,8 +65,9 @@ export function TimesheetView() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const [shiftNumber, setShiftNumber] = useState('1'); // '0' = Руководители
+  const [shiftNumber, setShiftNumber] = useState('1');
   const [timesheet, setTimesheet] = useState<TimesheetWorker[]>([]);
+  const [workerTotals, setWorkerTotals] = useState<Record<string, { hours: number; night: number; holiday: number; combination: number }>>({});
   const [daysInMonth, setDaysInMonth] = useState(30);
   const [loading, setLoading] = useState(true);
   const [editCell, setEditCell] = useState<CellEdit | null>(null);
@@ -68,6 +81,7 @@ export function TimesheetView() {
       const res = await fetch(`/api/reports/timesheet?year=${year}&month=${month}&shiftNumber=${shiftNumber}`);
       const data = await res.json();
       setTimesheet(data.timesheet || []);
+      setWorkerTotals(data.workerTotals || {});
       setDaysInMonth(data.daysInMonth || 30);
     } catch (err) {
       console.error('Error fetching timesheet:', err);
@@ -77,11 +91,14 @@ export function TimesheetView() {
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
     fetch(`/api/reports/timesheet?year=${year}&month=${month}&shiftNumber=${shiftNumber}`)
       .then(r => r.json())
       .then(data => {
         if (!cancelled) {
           setTimesheet(data.timesheet || []);
+          setWorkerTotals(data.workerTotals || {});
           setDaysInMonth(data.daysInMonth || 30);
           setLoading(false);
         }
@@ -101,6 +118,8 @@ export function TimesheetView() {
   const handleCellClick = (worker: TimesheetWorker, day: TimesheetDay) => {
     if (userRole !== 'admin' && userRole !== 'master') return;
     if (!day.shiftType) return;
+    // Не редактируем неактивные ячейки (другой разряд, после перевода, до перевода)
+    if (day.isOtherRow || day.isTransferredDay || day.isBeforeTransferIn) return;
 
     setEditCell({
       workerId: worker.workerId,
@@ -114,7 +133,6 @@ export function TimesheetView() {
     setAbsenceReason('');
   };
 
-  // Мгновенное сохранение — сразу в API
   const handleSaveCell = async () => {
     if (!editCell || !selectedStatus) return;
     setSaving(true);
@@ -136,20 +154,7 @@ export function TimesheetView() {
         }),
       });
 
-      // Обновляем локальное состояние
-      setTimesheet(prev => prev.map(w => {
-        if (w.workerId !== editCell.workerId) return w;
-        return {
-          ...w,
-          days: w.days.map(d => {
-            if (d.date !== editCell.date) return d;
-            return { ...d, status: selectedStatus };
-          }),
-        };
-      }));
-
       setEditCell(null);
-      // Перезагружаем табель чтобы пересчитать совмещение
       fetchTimesheet();
     } catch (err) {
       console.error('Error saving attendance:', err);
@@ -157,8 +162,7 @@ export function TimesheetView() {
     setSaving(false);
   };
 
-  const getStatusDisplay = (status: string, phase: ShiftPhase, isNonShift?: boolean) => {
-    if (status === 'day' && isNonShift) return { text: 'Р', color: 'bg-emerald-100 text-emerald-800', editable: true };
+  const getStatusDisplay = (status: string, phase: ShiftPhase) => {
     if (status === 'day') return { text: 'Д', color: 'bg-green-100 text-green-800', editable: true };
     if (status === 'night') return { text: 'Н', color: 'bg-blue-100 text-blue-800', editable: true };
     if (status === 'rest') return { text: 'О', color: 'bg-gray-100 text-gray-500', editable: false };
@@ -171,12 +175,23 @@ export function TimesheetView() {
   };
 
   const positionLabel = (p: string) =>
-    p === 'master' ? 'Мастер' : p === 'master_pu' ? 'М.ПУ' : p === 'section_head' ? 'НУ' : '';
+    p === 'master' ? 'Мастер' : p === 'master_pu' ? 'м.ПУ' : p === 'section_head' ? 'Н.уч' : '';
 
   const positionColor = (p: string) =>
     p === 'master' ? 'bg-amber-600' : p === 'master_pu' ? 'bg-blue-600' : p === 'section_head' ? 'bg-indigo-600' : '';
 
   const canEdit = userRole === 'admin' || userRole === 'master';
+
+  // Группировка строк по работникам для итоговых строк
+  const workerRowGroups: { workerId: string; rows: TimesheetWorker[]; total: { hours: number; night: number; holiday: number; combination: number } }[] = [];
+  let currentGroup: { workerId: string; rows: TimesheetWorker[]; total: { hours: number; night: number; holiday: number; combination: number } } | null = null;
+  for (const row of timesheet) {
+    if (!currentGroup || currentGroup.workerId !== row.workerId) {
+      currentGroup = { workerId: row.workerId, rows: [], total: workerTotals[row.workerId] || { hours: 0, night: 0, holiday: 0, combination: 0 } };
+      workerRowGroups.push(currentGroup);
+    }
+    currentGroup.rows.push(row);
+  }
 
   if (loading) {
     return (
@@ -217,13 +232,13 @@ export function TimesheetView() {
             <div className="flex items-center gap-2 w-full sm:w-auto">
               <label className="text-sm font-medium text-gray-600 whitespace-nowrap">Смена:</label>
               <Select value={shiftNumber} onValueChange={setShiftNumber}>
-                <SelectTrigger className="w-full sm:w-36"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-full sm:w-40"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="0">Руководители</SelectItem>
                   <SelectItem value="1">Смена 1</SelectItem>
                   <SelectItem value="2">Смена 2</SelectItem>
                   <SelectItem value="3">Смена 3</SelectItem>
                   <SelectItem value="4">Смена 4</SelectItem>
+                  <SelectItem value="0">Руководители</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -234,7 +249,6 @@ export function TimesheetView() {
       {/* Legend */}
       <div className="overflow-x-auto pb-1 -mx-1 px-1 md:overflow-visible md:mx-0 md:px-0">
         <div className="flex gap-1.5 sm:gap-2 text-[10px] sm:text-xs whitespace-nowrap md:whitespace-normal md:flex-wrap">
-          <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-emerald-100 text-emerald-800 rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5">Р</span><span className="hidden xs:inline">Раб.день 8ч</span></span>
           <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-green-100 text-green-800 rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5">Д</span><span className="hidden xs:inline">День</span></span>
           <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-blue-100 text-blue-800 rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5">Н</span><span className="hidden xs:inline">Ночь</span></span>
           <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-gray-100 text-gray-500 rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5">О</span><span className="hidden xs:inline">Отсыпной</span></span>
@@ -249,6 +263,7 @@ export function TimesheetView() {
           <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-teal-400 text-white rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5">ПМ</span><span className="hidden xs:inline">Подмена</span></span>
           <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-purple-400 text-white rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5">ПР</span><span className="hidden xs:inline">Перевод</span></span>
           <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-rose-200 text-rose-800 rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5 border border-rose-400">С</span><span className="hidden xs:inline">Совмещение</span></span>
+          <span className="flex items-center gap-0.5 sm:gap-1"><span className="w-4 h-4 sm:w-5 sm:h-5 bg-gray-200 text-gray-400 rounded text-center text-[9px] sm:text-xs leading-4 sm:leading-5 border border-dashed border-gray-300">Д</span><span className="hidden xs:inline">Другой разряд / До перевода</span></span>
         </div>
       </div>
 
@@ -261,89 +276,126 @@ export function TimesheetView() {
             </CardContent>
           </Card>
         )}
-        {timesheet.map((worker) => (
-          <Card key={worker.workerId} className={`overflow-hidden ${worker.isCombination ? 'ring-2 ring-rose-300' : ''}`}>
-            <CardHeader className="pb-2 pt-3 px-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm font-semibold text-gray-900">
-                  {worker.lastName} {worker.firstName[0]}.{worker.patronymic ? ` ${worker.patronymic[0]}.` : ''}
-                  {worker.isCombination && <span className="ml-1 text-[10px] text-rose-600 font-normal">(совмещ.)</span>}
-                </CardTitle>
-                <div className="flex items-center gap-1.5">
-                  {worker.position !== 'worker' ? (
-                    <Badge className={`text-[10px] px-1.5 py-0 ${positionColor(worker.position)}`}>
-                      {positionLabel(worker.position)}
+        {workerRowGroups.map(group => {
+          const firstRow = group.rows[0];
+          const hasMultiple = group.rows.length > 1;
+          return (
+            <Card key={group.workerId} className={`overflow-hidden ${firstRow.isCombination ? 'ring-2 ring-rose-300' : ''}`}>
+              <CardHeader className="pb-2 pt-3 px-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-semibold text-gray-900">
+                    {firstRow.lastName} {firstRow.firstName[0]}.{firstRow.patronymic ? ` ${firstRow.patronymic[0]}.` : ''}
+                    {firstRow.isCombination && <span className="ml-1 text-[10px] text-rose-600 font-normal">(совмещ.)</span>}
+                  </CardTitle>
+                  <div className="flex items-center gap-1.5">
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                      {firstRow.equipment}
                     </Badge>
-                  ) : (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                      {worker.gradeNumber} разр.
-                    </Badge>
-                  )}
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                    {worker.equipment}
-                  </Badge>
+                  </div>
                 </div>
-              </div>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
-              <div className="grid grid-cols-7 gap-1 mb-1">
-                {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(d => (
-                  <div key={d} className="text-[9px] text-gray-400 text-center font-medium">{d}</div>
-                ))}
-              </div>
-              <div className="grid grid-cols-7 gap-1">
-                {(() => {
-                  const firstDayDate = new Date(year, month - 1, 1);
-                  let firstDayOffset = firstDayDate.getDay() - 1;
-                  if (firstDayOffset < 0) firstDayOffset = 6;
-                  const pads: JSX.Element[] = [];
-                  for (let i = 0; i < firstDayOffset; i++) {
-                    pads.push(<div key={`pad-${i}`} />);
-                  }
-                  return pads;
-                })()}
-                {worker.days.map(day => {
-                  const display = getStatusDisplay(day.status, day.phase, shiftNumber === '0');
-                  const dateObj = new Date(year, month - 1, day.day);
-                  const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day.day).padStart(2, '0')}`;
-                  const isH = holidays.has(dateStr);
-                  const isWknd = dateObj.getDay() === 0 || dateObj.getDay() === 6;
-                  const isCombDay = day.isCombination && (day.status === 'day' || day.status === 'night' || day.status === 'present');
-                  return (
-                    <div
-                      key={day.day}
-                      className={`aspect-square flex flex-col items-center justify-center rounded text-[10px] leading-tight ${display.color} ${isCombDay ? 'ring-1 ring-rose-400' : ''} ${display.editable && canEdit ? 'cursor-pointer active:scale-95 transition-transform' : ''} ${isH ? 'ring-1 ring-red-300' : isWknd ? 'ring-1 ring-amber-200' : ''}`}
-                      onClick={() => display.editable && canEdit && handleCellClick(worker, day)}
-                    >
-                      <span className="text-[8px] opacity-60">{day.day}</span>
-                      <span className="font-semibold">{display.text}</span>
+              </CardHeader>
+              <CardContent className="px-3 pb-3 space-y-2">
+                {group.rows.map((worker, rowIdx) => (
+                  <div key={`${worker.workerId}_${worker.gradeNumber}_${worker.position}`}>
+                    {/* Метка разряда/должности для подстрок */}
+                    {hasMultiple && (
+                      <div className="text-[10px] font-medium text-gray-500 mb-0.5 flex items-center gap-1">
+                        {worker.position !== 'worker' ? POSITION_MAP[worker.position] || worker.position : `${worker.gradeNumber} разр.`}
+                        {rowIdx === 0 && <span className="text-emerald-600">(текущий)</span>}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-7 gap-1 mb-1">
+                      {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(d => (
+                        <div key={d} className="text-[9px] text-gray-400 text-center font-medium">{d}</div>
+                      ))}
                     </div>
-                  );
-                })}
-              </div>
-              <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-100 text-xs">
-                <div className="flex gap-2 flex-wrap">
-                  <span className="text-emerald-700 font-medium">
-                    Часы: <span className="font-bold">{worker.totalHours}</span>
-                  </span>
-                  {shiftNumber !== '0' && (
-                    <span className="text-blue-700">
-                      Ночн.: <span className="font-semibold">{worker.totalNightHours}</span>
-                    </span>
-                  )}
-                  <span className="text-red-700">
-                    Праздн.: <span className="font-semibold">{worker.totalHolidayHours}</span>
-                  </span>
-                  {worker.totalCombinationHours > 0 && shiftNumber !== '0' && (
-                    <span className="text-rose-700">
-                      Совмещ.: <span className="font-semibold">{worker.totalCombinationHours}</span>
-                    </span>
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+                    <div className="grid grid-cols-7 gap-1">
+                      {(() => {
+                        const firstDayDate = new Date(year, month - 1, 1);
+                        let firstDayOffset = firstDayDate.getDay() - 1;
+                        if (firstDayOffset < 0) firstDayOffset = 6;
+                        const pads: JSX.Element[] = [];
+                        for (let i = 0; i < firstDayOffset; i++) {
+                          pads.push(<div key={`pad-${i}`} />);
+                        }
+                        return pads;
+                      })()}
+                      {worker.days.map(day => {
+                        const display = getStatusDisplay(day.status, day.phase);
+                        const dateObj = new Date(year, month - 1, day.day);
+                        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day.day).padStart(2, '0')}`;
+                        const isH = holidays.has(dateStr);
+                        const isWknd = dateObj.getDay() === 0 || dateObj.getDay() === 6;
+                        const isCombDay = day.isCombination && (day.status === 'day' || day.status === 'night' || day.status === 'present');
+                        return (
+                          <div
+                            key={day.day}
+                            className={`aspect-square flex flex-col items-center justify-center rounded text-[10px] leading-tight ${
+                              day.isTransferredDay || day.isBeforeTransferIn
+                                ? 'bg-gray-100 text-gray-300'
+                                : day.isOtherRow
+                                  ? 'bg-gray-200 text-gray-400 opacity-50'
+                                  : display.color
+                            } ${isCombDay && !day.isOtherRow && !day.isTransferredDay && !day.isBeforeTransferIn ? 'ring-1 ring-rose-400' : ''} ${!day.isOtherRow && !day.isTransferredDay && !day.isBeforeTransferIn && display.editable && canEdit ? 'cursor-pointer active:scale-95 transition-transform' : ''} ${isH && !day.isOtherRow && !day.isTransferredDay && !day.isBeforeTransferIn ? 'ring-1 ring-red-300' : isWknd && !day.isOtherRow && !day.isTransferredDay && !day.isBeforeTransferIn ? 'ring-1 ring-amber-200' : ''}`}
+                            onClick={() => !day.isOtherRow && !day.isTransferredDay && !day.isBeforeTransferIn && display.editable && canEdit && handleCellClick(worker, day)}
+                          >
+                            <span className="text-[8px] opacity-60">{day.day}</span>
+                            <span className="font-semibold">{day.isOtherRow || day.isTransferredDay || day.isBeforeTransferIn ? '' : display.text}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* Итого по подстроке */}
+                    <div className="flex items-center justify-between mt-1 pt-1 border-t border-gray-100 text-[10px]">
+                      <div className="flex gap-2 flex-wrap">
+                        <span className="text-emerald-700 font-medium">
+                          Ч: <span className="font-bold">{worker.totalHours}</span>
+                        </span>
+                        <span className="text-blue-700">
+                          Н: <span className="font-semibold">{worker.totalNightHours}</span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {/* Итого по работнику */}
+                {hasMultiple && (
+                  <div className="flex items-center justify-between mt-1 pt-2 border-t-2 border-gray-200 text-xs font-bold">
+                    <span>ИТОГО:</span>
+                    <div className="flex gap-2 flex-wrap">
+                      <span className="text-emerald-700">Часы: {group.total.hours}</span>
+                      <span className="text-blue-700">Ночн.: {group.total.night}</span>
+                      <span className="text-red-700">Праздн.: {group.total.holiday}</span>
+                      {group.total.combination > 0 && (
+                        <span className="text-rose-700">Совмещ.: {group.total.combination}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {!hasMultiple && (
+                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-100 text-xs">
+                    <div className="flex gap-2 flex-wrap">
+                      <span className="text-emerald-700 font-medium">
+                        Часы: <span className="font-bold">{firstRow.totalHours}</span>
+                      </span>
+                      <span className="text-blue-700">
+                        Ночн.: <span className="font-semibold">{firstRow.totalNightHours}</span>
+                      </span>
+                      <span className="text-red-700">
+                        Праздн.: <span className="font-semibold">{firstRow.totalHolidayHours}</span>
+                      </span>
+                      {firstRow.totalCombinationHours > 0 && (
+                        <span className="text-rose-700">
+                          Совмещ.: <span className="font-semibold">{firstRow.totalCombinationHours}</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
       {/* ===== DESKTOP: Full timesheet table ===== */}
@@ -368,48 +420,87 @@ export function TimesheetView() {
                   );
                 })}
                 <th className="px-2 py-2 text-center font-medium text-gray-700 border-l">Часы</th>
-                {shiftNumber !== '0' && <th className="px-2 py-2 text-center font-medium text-gray-700">Ночн.</th>}
+                <th className="px-2 py-2 text-center font-medium text-gray-700">Ночн.</th>
                 <th className="px-2 py-2 text-center font-medium text-gray-700">Праздн.</th>
-                {shiftNumber !== '0' && <th className="px-2 py-2 text-center font-medium text-rose-700">Совмещ.</th>}
+                <th className="px-2 py-2 text-center font-medium text-rose-700">Совмещ.</th>
               </tr>
             </thead>
             <tbody>
-              {timesheet.map((worker, wIdx) => (
-                <tr key={worker.workerId} className={`${wIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
-                  <td className="sticky left-0 z-10 px-2 py-1 border-r bg-inherit">
-                    <div className="font-medium text-gray-900">
-                      {worker.lastName} {worker.firstName[0]}.
-                      {worker.isCombination && <span className="ml-1 text-[9px] text-rose-600 font-normal">С</span>}
-                    </div>
-                    <div className="text-[10px] text-gray-500">
-                      {worker.position !== 'worker' ? positionLabel(worker.position) : `${worker.gradeNumber} разр.`} | {worker.equipment}
-                    </div>
-                  </td>
-                  {worker.days.map(day => {
-                    const display = getStatusDisplay(day.status, day.phase, shiftNumber === '0');
-                    const isCombDay = day.isCombination && (day.status === 'day' || day.status === 'night' || day.status === 'present');
-                    return (
-                      <td
-                        key={day.day}
-                        className={`px-0.5 py-0.5 text-center border border-gray-100 ${display.editable && canEdit ? 'cursor-pointer hover:ring-2 hover:ring-emerald-400' : ''} ${isCombDay ? 'bg-rose-50' : ''}`}
-                        onClick={() => display.editable && canEdit && handleCellClick(worker, day)}
-                      >
-                        <div className={`w-7 h-7 flex items-center justify-center rounded text-[11px] font-medium ${display.color} ${isCombDay ? 'ring-1 ring-rose-400' : ''}`}>
-                          {display.text}
-                        </div>
-                      </td>
-                    );
-                  })}
-                  <td className="px-2 py-1 text-center font-medium border-l text-emerald-700">{worker.totalHours}</td>
-                  {shiftNumber !== '0' && <td className="px-2 py-1 text-center text-blue-700">{worker.totalNightHours}</td>}
-                  <td className="px-2 py-1 text-center text-red-700">{worker.totalHolidayHours}</td>
-                  {shiftNumber !== '0' && (
-                    <td className={`px-2 py-1 text-center font-medium ${worker.totalCombinationHours > 0 ? 'text-rose-700' : 'text-gray-400'}`}>
-                      {worker.totalCombinationHours ?? 0}
-                    </td>
-                  )}
-                </tr>
-              ))}
+              {workerRowGroups.map(group => {
+                const hasMultiple = group.rows.length > 1;
+                return (
+                  <React.Fragment key={group.workerId}>
+                    {group.rows.map((worker, rowIdx) => (
+                      <tr key={`${worker.workerId}_${worker.gradeNumber}_${worker.position}`} className={`${rowIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} ${hasMultiple && rowIdx > 0 ? 'border-t-0' : ''}`}>
+                        <td className={`sticky left-0 z-10 px-2 py-1 border-r bg-inherit ${hasMultiple && rowIdx > 0 ? 'border-t-0 pt-0' : ''}`}>
+                          {rowIdx === 0 ? (
+                            <div className="font-medium text-gray-900">
+                              {worker.lastName} {worker.firstName[0]}.
+                              {worker.isCombination && <span className="ml-1 text-[9px] text-rose-600 font-normal">С</span>}
+                              {worker.isTransferred && <span className="ml-1 text-[9px] text-amber-600 font-normal">→См.{worker.isTransferred}</span>}
+                            </div>
+                          ) : (
+                            <div className="text-[10px] text-gray-400 pl-2">↳</div>
+                          )}
+                          <div className="text-[10px] text-gray-500">
+                            {worker.position !== 'worker' ? positionLabel(worker.position) : `${worker.gradeNumber} разр.`} | {worker.equipment}
+                          </div>
+                        </td>
+                        {worker.days.map(day => {
+                          const display = getStatusDisplay(day.status, day.phase);
+                          const isCombDay = day.isCombination && (day.status === 'day' || day.status === 'night' || day.status === 'present');
+                          return (
+                            <td
+                              key={day.day}
+                              className={`px-0.5 py-0.5 text-center border border-gray-100 ${
+                                day.isTransferredDay || day.isBeforeTransferIn
+                                  ? 'bg-gray-100'
+                                  : day.isOtherRow
+                                    ? 'bg-gray-200'
+                                    : isCombDay ? 'bg-rose-50' : ''
+                              } ${!day.isOtherRow && !day.isTransferredDay && !day.isBeforeTransferIn && display.editable && canEdit ? 'cursor-pointer hover:ring-2 hover:ring-emerald-400' : ''}`}
+                              onClick={() => !day.isOtherRow && !day.isTransferredDay && !day.isBeforeTransferIn && display.editable && canEdit && handleCellClick(worker, day)}
+                            >
+                              <div className={`w-7 h-7 flex items-center justify-center rounded text-[11px] font-medium ${
+                                day.isTransferredDay || day.isBeforeTransferIn
+                                  ? 'bg-gray-100 text-gray-300'
+                                  : day.isOtherRow
+                                    ? 'bg-gray-200 text-gray-300'
+                                    : `${display.color} ${isCombDay ? 'ring-1 ring-rose-400' : ''}`
+                              }`}>
+                                {day.isOtherRow || day.isTransferredDay || day.isBeforeTransferIn ? '' : display.text}
+                              </div>
+                            </td>
+                          );
+                        })}
+                        <td className="px-2 py-1 text-center font-medium border-l text-emerald-700">{worker.totalHours}</td>
+                        <td className="px-2 py-1 text-center text-blue-700">{worker.totalNightHours}</td>
+                        <td className="px-2 py-1 text-center text-red-700">{worker.totalHolidayHours}</td>
+                        <td className={`px-2 py-1 text-center font-medium ${worker.totalCombinationHours > 0 ? 'text-rose-700' : 'text-gray-400'}`}>
+                          {worker.totalCombinationHours ?? 0}
+                        </td>
+                      </tr>
+                    ))}
+                    {/* Итоговая строка по работнику (если несколько подстрок) */}
+                    {hasMultiple && (
+                      <tr className="bg-slate-100/80 font-bold text-xs">
+                        <td className="sticky left-0 z-10 px-2 py-1 border-r bg-slate-100/80">
+                          <div className="text-gray-700">ИТОГО</div>
+                        </td>
+                        {Array.from({ length: daysInMonth }, (_, i) => (
+                          <td key={i + 1} className="px-0.5 py-0.5 border border-gray-100 bg-slate-100/50" />
+                        ))}
+                        <td className="px-2 py-1 text-center text-emerald-700 border-l">{group.total.hours}</td>
+                        <td className="px-2 py-1 text-center text-blue-700">{group.total.night}</td>
+                        <td className="px-2 py-1 text-center text-red-700">{group.total.holiday}</td>
+                        <td className={`px-2 py-1 text-center ${group.total.combination > 0 ? 'text-rose-700' : 'text-gray-400'}`}>
+                          {group.total.combination}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
               {timesheet.length === 0 && (
                 <tr>
                   <td colSpan={daysInMonth + 5} className="text-center py-8 text-gray-500">
@@ -432,7 +523,7 @@ export function TimesheetView() {
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="text-sm text-gray-500">
-              Дата: {editCell?.date} | {shiftNumber === '0' ? 'Рабочий день (8ч)' : editCell?.shiftType === 'day' ? 'День (7:30-19:30)' : 'Ночь (19:30-7:30)'}
+              Дата: {editCell?.date} | Смена: {editCell?.shiftType === 'day' ? 'День (7:30-19:30)' : 'Ночь (19:30-7:30)'}
             </div>
             <div>
               <label className="text-sm font-medium mb-2 block">Статус:</label>

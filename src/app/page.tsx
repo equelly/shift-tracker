@@ -45,21 +45,32 @@ function AppContent() {
     }
   }, []);
 
+  const executeTransfers = useCallback(async () => {
+    try {
+      await fetch('/api/transfer-orders/execute', { method: 'POST' });
+    } catch {
+      // silently ignore
+    }
+  }, []);
+
   useEffect(() => {
     if (status !== 'authenticated') return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchPendingCount();
+    executeTransfers();
     const interval = setInterval(fetchPendingCount, 60_000);
-    const onFocus = () => fetchPendingCount();
+    const onFocus = () => { fetchPendingCount(); executeTransfers(); };
     window.addEventListener('focus', onFocus);
     return () => { clearInterval(interval); window.removeEventListener('focus', onFocus); };
-  }, [status, fetchPendingCount]);
+  }, [status, fetchPendingCount, executeTransfers]);
 
   const handleTabChange = useCallback((tabId: TabId) => {
     setActiveTab(tabId);
-    if (tabId === 'transfer-orders') {
+    if (tabId === 'transfer-orders' || tabId === 'timesheet') {
+      executeTransfers();
       setTimeout(fetchPendingCount, 500);
     }
-  }, [fetchPendingCount]);
+  }, [fetchPendingCount, executeTransfers]);
 
   if (status === 'loading') {
     return (

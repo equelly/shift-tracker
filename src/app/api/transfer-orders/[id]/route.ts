@@ -1,16 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getAuditUser } from '@/lib/auth-guard';
+import { formatDate } from '@/lib/shift-utils';
 
-// PATCH /api/transfer-orders/[id] — утвердить или отменить
+// PATCH /api/transfer-orders/[id] — утвердить / отменить распоряжение
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params;
+    const { id } = await params;
     const body = await request.json();
-    const { action } = body;
+    const { action } = body; // "approve" | "cancel"
 
     const order = await db.transferOrder.findUnique({
       where: { id },
@@ -30,25 +31,66 @@ export async function PATCH(
     }
 
     const { userId, userName } = await getAuditUser();
+    const today = formatDate(new Date());
 
     if (action === 'approve') {
-      // Утверждение — просто меняем статус (работники уже переведены)
       if (order.status !== 'draft') {
         return NextResponse.json({ error: 'Можно утвердить только черновик' }, { status: 400 });
       }
 
+      // Черновики уже могли быть исполнены через /execute при наступлении effectiveDate.
+      // При утверждении просто меняем статус — переводы уже применены.
+      // Если есть неисполненные строки с наступившей датой — исполняем немедленно.
+      const alreadyExecutedCount = order.items.filter(i => i.executed).length;
+      const itemsToExecuteNow = order.items.filter(
+        item => item.effectiveDate <= today && !item.executed && item.effectiveDate !== ''
+      );
+
+      for (const item of itemsToExecuteNow) {
+        const updateData: any = {};
+        if (item.toShiftNumber !== null && item.toShiftNumber !== undefined) {
+          updateData.shiftNumber = item.toShiftNumber;
+        }
+        if (item.toEquipmentId !== null && item.toEquipmentId !== undefined) {
+          updateData.equipmentId = item.toEquipmentId;
+        }
+        if (item.toGradeNumber !== null && item.toGradeNumber !== undefined) {
+          updateData.gradeNumber = item.toGradeNumber;
+        }
+        if (item.toPosition !== null && item.toPosition !== undefined) {
+          updateData.position = item.toPosition;
+        }
+        if (Object.keys(updateData).length > 0) {
+          await db.worker.update({
+            where: { id: item.workerId },
+            data: updateData,
+          });
+        }
+
+        // Обновляем профессию если указана
+        if (item.toProfession) {
+          await db.workerProfession.deleteMany({ where: { workerId: item.workerId } });
+          await db.workerProfession.create({
+            data: { workerId: item.workerId, professionName: item.toProfession },
+          });
+        }
+
+        // Отмечаем строку как выполненную
+        await db.transferOrderItem.update({
+          where: { id: item.id },
+          data: { executed: true, executedAt: new Date() },
+        });
+      }
+
+      const totalExecuted = alreadyExecutedCount + itemsToExecuteNow.length;
+
+      // Обновляем статус распоряжения
       const updated = await db.transferOrder.update({
         where: { id },
         data: {
           status: 'approved',
           approvedBy: userId,
           approvedAt: new Date(),
-          items: {
-            updateMany: {
-              where: { orderId: id },
-              data: { executed: true },
-            },
-          },
         },
         include: {
           shift: true,
@@ -56,7 +98,7 @@ export async function PATCH(
           approver: { select: { name: true } },
           items: {
             include: {
-              worker: { include: { grade: true, shift: true } },
+              worker: { include: { grade: true, shift: true, professions: true } },
               fromEquipment: true,
               toEquipment: true,
             },
@@ -71,7 +113,7 @@ export async function PATCH(
           action: 'update',
           entityType: 'transfer_order',
           entityId: id,
-          description: `Распоряжение ${order.orderNumber} утверждено`,
+          description: `Утверждено распоряжение ${order.orderNumber} (исполнено ${totalExecuted} из ${order.items.length} строк)`,
         },
       });
 
@@ -79,50 +121,58 @@ export async function PATCH(
     }
 
     if (action === 'cancel') {
-      // Отмена — ВОЗВРАЩАЕМ работников на прежние места
-      if (order.status !== 'draft' && order.status !== 'approved') {
-        return NextResponse.json({ error: 'Можно отменить только черновик или утверждённое' }, { status: 400 });
-      }
+      if (order.status === 'approved' || order.status === 'draft') {
+        // Откатываем ТОЛЬКО выполненные (executed) строки —
+        // это актуально и для черновиков, т.к. они могли быть исполнены через /execute
+        for (const item of order.items) {
+          if (item.executed && !item.revertedAt) {
+            const rollbackData: any = {};
+            if (item.fromShiftNumber !== null && item.fromShiftNumber !== undefined) {
+              rollbackData.shiftNumber = item.fromShiftNumber;
+            }
+            if (item.fromEquipmentId !== null && item.fromEquipmentId !== undefined) {
+              rollbackData.equipmentId = item.fromEquipmentId;
+            }
+            if (item.fromGradeNumber !== null && item.fromGradeNumber !== undefined) {
+              rollbackData.gradeNumber = item.fromGradeNumber;
+            }
+            if (item.fromPosition !== null && item.fromPosition !== undefined) {
+              rollbackData.position = item.fromPosition;
+            }
+            if (Object.keys(rollbackData).length > 0) {
+              await db.worker.update({
+                where: { id: item.workerId },
+                data: rollbackData,
+              });
+            }
 
-      // Откатываем каждого работника
-      for (const item of order.items) {
-        const rollbackData: any = {};
-        if (item.fromEquipmentId !== null && item.fromEquipmentId !== undefined) {
-          rollbackData.equipmentId = item.fromEquipmentId;
-        }
-        if (item.fromShiftNumber !== null && item.fromShiftNumber !== undefined) {
-          rollbackData.shiftNumber = item.fromShiftNumber;
-        }
-        if (item.fromGradeNumber !== null && item.fromGradeNumber !== undefined) {
-          rollbackData.gradeNumber = item.fromGradeNumber;
-        }
+            // Возвращаем профессию
+            if (item.fromProfession) {
+              await db.workerProfession.deleteMany({ where: { workerId: item.workerId } });
+              await db.workerProfession.create({
+                data: { workerId: item.workerId, professionName: item.fromProfession },
+              });
+            }
 
-        if (Object.keys(rollbackData).length > 0) {
-          await db.worker.update({
-            where: { id: item.workerId },
-            data: rollbackData,
-          });
+            // Отмечаем как откаченную
+            await db.transferOrderItem.update({
+              where: { id: item.id },
+              data: { revertedAt: new Date() },
+            });
+          }
         }
       }
 
       const updated = await db.transferOrder.update({
         where: { id },
-        data: {
-          status: 'cancelled',
-          items: {
-            updateMany: {
-              where: { orderId: id },
-              data: { executed: false },
-            },
-          },
-        },
+        data: { status: 'cancelled' },
         include: {
           shift: true,
           creator: { select: { name: true } },
           approver: { select: { name: true } },
           items: {
             include: {
-              worker: { include: { grade: true, shift: true } },
+              worker: { include: { grade: true, shift: true, professions: true } },
               fromEquipment: true,
               toEquipment: true,
             },
@@ -137,7 +187,7 @@ export async function PATCH(
           action: 'update',
           entityType: 'transfer_order',
           entityId: id,
-          description: `Распоряжение ${order.orderNumber} отменено, работники возвращены`,
+          description: `Отменено распоряжение ${order.orderNumber}`,
         },
       });
 
@@ -145,65 +195,32 @@ export async function PATCH(
     }
 
     return NextResponse.json({ error: 'Неизвестное действие' }, { status: 400 });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error updating transfer order:', error);
-    return NextResponse.json(
-      { error: 'Ошибка: ' + (error.message || String(error)) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to update transfer order' }, { status: 500 });
   }
 }
 
-// DELETE /api/transfer-orders/[id] — удалить черновик (с откатом работников)
+// DELETE /api/transfer-orders/[id] — удалить черновик
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params;
+    const { id } = await params;
 
-    const order = await db.transferOrder.findUnique({
-      where: { id },
-      include: {
-        items: true,
-      },
-    });
-
+    const order = await db.transferOrder.findUnique({ where: { id } });
     if (!order) {
-      return NextResponse.json({ error: 'Распоряжение не найдено' }, { status: 404 });
+      return NextResponse.json({ error: 'Не найдено' }, { status: 404 });
     }
-
     if (order.status !== 'draft') {
       return NextResponse.json({ error: 'Можно удалить только черновик' }, { status: 400 });
     }
 
-    const { userId, userName } = await getAuditUser();
-
-    // Откатываем работников на прежние места
-    for (const item of order.items) {
-      const rollbackData: any = {};
-      if (item.fromEquipmentId !== null && item.fromEquipmentId !== undefined) {
-        rollbackData.equipmentId = item.fromEquipmentId;
-      }
-      if (item.fromShiftNumber !== null && item.fromShiftNumber !== undefined) {
-        rollbackData.shiftNumber = item.fromShiftNumber;
-      }
-      if (item.fromGradeNumber !== null && item.fromGradeNumber !== undefined) {
-        rollbackData.gradeNumber = item.fromGradeNumber;
-      }
-
-      if (Object.keys(rollbackData).length > 0) {
-        await db.worker.update({
-          where: { id: item.workerId },
-          data: rollbackData,
-        });
-      }
-    }
-
-    // Удаляем распоряжение
-    await db.transferOrderItem.deleteMany({ where: { orderId: id } });
+    // Удаляем строки и само распоряжение (каскад)
     await db.transferOrder.delete({ where: { id } });
 
+    const { userId, userName } = await getAuditUser();
     await db.auditLog.create({
       data: {
         userId,
@@ -211,16 +228,13 @@ export async function DELETE(
         action: 'delete',
         entityType: 'transfer_order',
         entityId: id,
-        description: `Черновик распоряжения ${order.orderNumber} удалён, работники возвращены`,
+        description: `Удалено распоряжение ${order.orderNumber}`,
       },
     });
 
     return NextResponse.json({ success: true });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error deleting transfer order:', error);
-    return NextResponse.json(
-      { error: 'Ошибка: ' + (error.message || String(error)) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to delete transfer order' }, { status: 500 });
   }
 }

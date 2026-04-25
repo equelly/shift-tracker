@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { calculateNightHours, WORKER_POSITIONS, getScheduleType } from '@/lib/shift-utils';
+import { calculateNightHours } from '@/lib/shift-utils';
 import { getAuditUser } from '@/lib/auth-guard';
 
 export async function GET(request: NextRequest) {
@@ -44,15 +44,7 @@ export async function POST(request: NextRequest) {
 
     const { userId, userName } = await getAuditUser();
 
-    // Get worker position to determine schedule type
-    const worker = await db.worker.findUnique({
-      where: { id: workerId },
-      select: { position: true },
-    });
-    const position = worker?.position || 'worker';
-    const scheduleType = getScheduleType(position);
-
-    // Check holiday
+    // Auto-calculate hours
     const holiday = await db.holiday.findUnique({ where: { date } });
 
     let hoursWorked = 0;
@@ -60,35 +52,36 @@ export async function POST(request: NextRequest) {
     let holidayHours = 0;
 
     if (status === 'present') {
-      if (scheduleType === '8h' || shiftType === 'day_8h') {
-        hoursWorked = 8;
-        nightHours = 0;
-        if (holiday) holidayHours = 8;
-      } else {
-        hoursWorked = 12;
-        nightHours = calculateNightHours(shiftType as 'day' | 'night');
-        if (holiday) holidayHours = 12;
-      }
+      hoursWorked = 12;
+      nightHours = calculateNightHours(shiftType);
+      if (holiday) holidayHours = 12;
     }
 
-    // Normalize shiftType for storage: day_8h → day for DB compatibility
-    const storeShiftType = shiftType === 'day_8h' ? 'day' : shiftType;
+    // Get worker's current grade/position for multi-row timesheet
+    const workerData = await db.worker.findUnique({
+      where: { id: workerId },
+      select: { gradeNumber: true, position: true },
+    });
+    const currentGradeNumber = workerData?.gradeNumber ?? 0;
+    const currentPosition = workerData?.position ?? 'worker';
 
     // Upsert attendance record
     const record = await db.attendanceRecord.upsert({
       where: {
-        workerId_date_shiftType: { workerId, date, shiftType: storeShiftType },
+        workerId_date_shiftType: { workerId, date, shiftType },
       },
       create: {
         workerId,
         date,
-        shiftType: storeShiftType,
+        shiftType,
         status,
         absenceReason: absenceReason || null,
         notes: notes || null,
         hoursWorked,
         nightHours,
         holidayHours,
+        gradeNumber: currentGradeNumber,
+        position: currentPosition,
       },
       update: {
         status,
@@ -97,6 +90,8 @@ export async function POST(request: NextRequest) {
         hoursWorked,
         nightHours,
         holidayHours,
+        gradeNumber: currentGradeNumber,
+        position: currentPosition,
       },
       include: { worker: true },
     });
@@ -115,11 +110,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Return with calculated hours for immediate UI update
-    return NextResponse.json({
-      ...record,
-      _calculated: { hoursWorked, nightHours, holidayHours },
-    }, { status: 201 });
+    return NextResponse.json(record, { status: 201 });
   } catch (error) {
     console.error('Error creating attendance:', error);
     return NextResponse.json({ error: 'Failed to create attendance' }, { status: 500 });

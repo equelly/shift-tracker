@@ -9,13 +9,17 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { useToast } from '@/hooks/use-toast';
 
 // --- Типы ---
 interface TransferOrderItem {
   id: string;
   workerId: string;
-  worker: { id: string; lastName: string; firstName: string; patronymic: string; shiftNumber: number; equipmentId?: number | null; gradeNumber?: number; grade?: { number: number; name: string } };
+  worker: {
+    id: string; lastName: string; firstName: string; patronymic: string;
+    shiftNumber: number | null; equipmentId?: number | null;
+    gradeNumber: number; position: string;
+    professions: { professionName: string }[];
+  };
   fromEquipmentId: number | null;
   fromEquipment: { id: number; name: string } | null;
   toEquipmentId: number | null;
@@ -24,7 +28,15 @@ interface TransferOrderItem {
   toShiftNumber: number | null;
   fromGradeNumber: number | null;
   toGradeNumber: number | null;
+  fromPosition: string | null;
+  toPosition: string | null;
+  fromProfession: string | null;
+  toProfession: string | null;
+  effectiveDate: string;
+  duration: string;
   executed: boolean;
+  executedAt: string | null;
+  revertedAt: string | null;
 }
 
 interface TransferOrder {
@@ -51,11 +63,12 @@ interface Worker {
   lastName: string;
   firstName: string;
   patronymic: string;
-  shiftNumber: number;
+  shiftNumber: number | null;
   equipmentId: number | null;
   gradeNumber: number;
-  grade: { number: number; name: string; hourlyRate: number };
-  equipment: { id: number; name: string; area: string } | null;
+  position: string;
+  grade: { number: number; name: string };
+  professions: { professionName: string }[];
 }
 
 interface Equipment {
@@ -65,6 +78,11 @@ interface Equipment {
   area: string;
 }
 
+interface GradeOption {
+  number: number;
+  name: string;
+}
+
 // --- Статусы ---
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   draft:     { label: 'Черновик',   color: 'bg-yellow-100 text-yellow-800 border-yellow-300' },
@@ -72,151 +90,201 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   cancelled: { label: 'Отменено',    color: 'bg-red-100 text-red-800 border-red-300' },
 };
 
-const ORDER_TYPE_MAP: Record<string, string> = {
-  equipment: 'Перевод на другое оборудование',
-  shift:     'Перевод в другую смену',
-  grade:     'Изменение разряда',
-  both:      'Перевод (смена + оборудование)',
-  combined:  'Комплексный перевод',
+const DURATION_MAP: Record<string, string> = {
+  until_next_order: 'До следующего распоряжения',
+  one_shift: 'На одну смену',
 };
 
-// --- Компонент формы добавления строки ---
+const POSITION_MAP: Record<string, string> = {
+  worker: 'Работник',
+  master: 'Мастер',
+  master_pu: 'Мастер ПУ',
+  section_head: 'Начальник участка',
+};
+
+// --- Компонент формы строки ---
 function ItemRowForm({
   item,
   index,
   workers,
   equipment,
+  grades,
   onUpdate,
   onRemove,
 }: {
-  item: { workerId: string; toEquipmentId: string; toShiftNumber: string; toGradeNumber: string };
+  item: {
+    workerId: string;
+    toEquipmentId: string;
+    toShiftNumber: string;
+    toGradeNumber: string;
+    toPosition: string;
+    toProfession: string;
+    effectiveDate: string;
+    duration: string;
+  };
   index: number;
   workers: Worker[];
   equipment: Equipment[];
+  grades: GradeOption[];
   onUpdate: (i: number, field: string, value: string) => void;
   onRemove: (i: number) => void;
 }) {
   const selectedWorker = workers.find(w => w.id === item.workerId);
-
-  // Определяем, есть ли хоть одно изменение
-  const hasChanges = selectedWorker && (
-    (item.toEquipmentId && item.toEquipmentId !== String(selectedWorker.equipmentId)) ||
-    (item.toShiftNumber && item.toShiftNumber !== String(selectedWorker.shiftNumber)) ||
-    (item.toGradeNumber && item.toGradeNumber !== String(selectedWorker.gradeNumber))
-  );
+  const currentProfession = selectedWorker?.professions?.[0]?.professionName || '';
 
   return (
-    <div className="py-3 border-b last:border-0">
-      {/* Заголовок строки */}
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-gray-500 font-mono text-sm">Строка {index + 1}</span>
-        <Button variant="ghost" size="sm" onClick={() => onRemove(index)} className="text-red-400 hover:text-red-600 h-7">
-          ✕ Удалить
+    <div className="py-3 border-b last:border-0 space-y-2">
+      {/* Строка 1: номер + работник + дата вступления */}
+      <div className="flex items-start gap-2">
+        <span className="text-gray-400 font-mono text-sm w-6 pt-2">{index + 1}.</span>
+        <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div>
+            <label className="text-xs text-gray-500">Работник</label>
+            <Select value={item.workerId} onValueChange={v => onUpdate(index, 'workerId', v)}>
+              <SelectTrigger className="h-9 text-sm w-full">
+                <SelectValue placeholder="Выбрать..." />
+              </SelectTrigger>
+              <SelectContent>
+                {workers.map(w => (
+                  <SelectItem key={w.id} value={w.id}>
+                    {w.lastName} {w.firstName[0]}.{w.patronymic[0]}. (См.{w.shiftNumber ?? '—'}, {w.gradeNumber} разр.)
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-500">Дата вступления</label>
+            <Input
+              type="date"
+              value={item.effectiveDate}
+              onChange={e => onUpdate(index, 'effectiveDate', e.target.value)}
+              className="h-9 text-sm"
+            />
+          </div>
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => onRemove(index)} className="text-red-400 hover:text-red-600 mt-5">
+          ✕
         </Button>
       </div>
 
-      {/* Выбор работника */}
-      <div className="mb-2">
-        <label className="text-xs text-gray-500">Работник</label>
-        <Select value={item.workerId} onValueChange={v => onUpdate(index, 'workerId', v)}>
-          <SelectTrigger className="h-9 text-sm w-full">
-            <SelectValue placeholder="Выбрать работника..." />
-          </SelectTrigger>
-          <SelectContent>
-            {workers.map(w => (
-              <SelectItem key={w.id} value={w.id}>
-                {w.lastName} {w.firstName[0]}.{w.patronymic[0]}. — {w.gradeNumber} разр., См.{w.shiftNumber}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      {/* Текущие данные работника */}
+      {selectedWorker && (
+        <div className="ml-8 text-xs text-gray-400 flex flex-wrap gap-x-3 gap-y-1">
+          <span>Сейчас: См.{selectedWorker.shiftNumber ?? '—'}</span>
+          <span>{selectedWorker.gradeNumber} разр.</span>
+          <span>{POSITION_MAP[selectedWorker.position] || selectedWorker.position}</span>
+          {currentProfession && <span>{currentProfession}</span>
+          }
+        </div>
+      )}
+
+      {/* Строка 2: куда перевод */}
+      <div className="ml-8 grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <div>
+          <label className="text-xs text-gray-500">В смену</label>
+          <Select value={item.toShiftNumber} onValueChange={v => onUpdate(index, 'toShiftNumber', v)}>
+            <SelectTrigger className="h-8 text-xs w-full">
+              <SelectValue placeholder="Без изменений" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="0">Руководители</SelectItem>
+              {[1, 2, 3, 4].map(n => (
+                <SelectItem key={n} value={String(n)}>Смена {n}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <label className="text-xs text-gray-500">На оборудование</label>
+          <Select value={item.toEquipmentId} onValueChange={v => onUpdate(index, 'toEquipmentId', v)}>
+            <SelectTrigger className="h-8 text-xs w-full">
+              <SelectValue placeholder="Без изменений" />
+            </SelectTrigger>
+            <SelectContent>
+              {equipment.map(e => (
+                <SelectItem key={e.id} value={String(e.id)}>{e.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <label className="text-xs text-gray-500">Разряд</label>
+          <Select value={item.toGradeNumber} onValueChange={v => onUpdate(index, 'toGradeNumber', v)}>
+            <SelectTrigger className="h-8 text-xs w-full">
+              <SelectValue placeholder="Без изменений" />
+            </SelectTrigger>
+            <SelectContent>
+              {grades.map(g => (
+                <SelectItem key={g.number} value={String(g.number)}>{g.number} разр.</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <label className="text-xs text-gray-500">Должность</label>
+          <Select value={item.toPosition} onValueChange={v => onUpdate(index, 'toPosition', v)}>
+            <SelectTrigger className="h-8 text-xs w-full">
+              <SelectValue placeholder="Без изменений" />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(POSITION_MAP).map(([key, label]) => (
+                <SelectItem key={key} value={key}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <label className="text-xs text-gray-500">Профессия</label>
+          <Input
+            value={item.toProfession}
+            onChange={e => onUpdate(index, 'toProfession', e.target.value)}
+            placeholder={currentProfession || 'Без изменений'}
+            className="h-8 text-xs"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-gray-500">Срок</label>
+          <Select value={item.duration} onValueChange={v => onUpdate(index, 'duration', v)}>
+            <SelectTrigger className="h-8 text-xs w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="until_next_order">До след. распоряжения</SelectItem>
+              <SelectItem value="one_shift">На одну смену</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
-
-      {/* Текущие данные работника (только чтение) */}
-      {selectedWorker && (
-        <div className="bg-slate-50 rounded-lg p-2 mb-3 text-xs space-y-1">
-          <p className="font-medium text-slate-600 mb-1">Текущие данные:</p>
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <span className="text-gray-400">Разряд:</span>{' '}
-              <span className="font-medium">{selectedWorker.gradeNumber} ({selectedWorker.grade?.name})</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Смена:</span>{' '}
-              <span className="font-medium">Смена {selectedWorker.shiftNumber}</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Оборуд.:</span>{' '}
-              <span className="font-medium">{selectedWorker.equipment?.name || '—'}</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Куда переводим */}
-      {selectedWorker && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <div>
-            <label className="text-xs text-gray-500">Новый разряд</label>
-            <Select value={item.toGradeNumber} onValueChange={v => onUpdate(index, 'toGradeNumber', v)}>
-              <SelectTrigger className="h-9 text-sm w-full">
-                <SelectValue placeholder="Не менять" />
-              </SelectTrigger>
-              <SelectContent>
-                {[1,2,3,4,5,6,7,8].filter(g => g !== selectedWorker.gradeNumber).map(g => (
-                  <SelectItem key={g} value={String(g)}>{g} разряд</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <label className="text-xs text-gray-500">В смену</label>
-            <Select value={item.toShiftNumber} onValueChange={v => onUpdate(index, 'toShiftNumber', v)}>
-              <SelectTrigger className="h-9 text-sm w-full">
-                <SelectValue placeholder="Не менять" />
-              </SelectTrigger>
-              <SelectContent>
-                {[1, 2, 3, 4].filter(s => s !== selectedWorker.shiftNumber).map(n => (
-                  <SelectItem key={n} value={String(n)}>Смена {n}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <label className="text-xs text-gray-500">На оборудование</label>
-            <Select value={item.toEquipmentId} onValueChange={v => onUpdate(index, 'toEquipmentId', v)}>
-              <SelectTrigger className="h-9 text-sm w-full">
-                <SelectValue placeholder="Не менять" />
-              </SelectTrigger>
-              <SelectContent>
-                {equipment.filter(e => e.id !== selectedWorker.equipmentId).map(e => (
-                  <SelectItem key={e.id} value={String(e.id)}>{e.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      )}
-
-      {/* Предупреждение о немедленном переводе */}
-      {selectedWorker && hasChanges && (
-        <div className="mt-3 p-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2">
-          <span className="text-base leading-none mt-0.5">⚠️</span>
-          <div>
-            <p className="font-medium">Работник будет переведён немедленно</p>
-            <p className="text-amber-600 mt-0.5">При создании черновика работник сразу перемещается на указанные смену, оборудование и разряд. Отмена распоряжения вернёт его обратно.</p>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
+// --- Описание изменений в строке ---
+function describeChanges(item: TransferOrderItem): string[] {
+  const changes: string[] = [];
+  if (item.toShiftNumber !== null && item.toShiftNumber !== item.fromShiftNumber) {
+    changes.push(`См.${item.fromShiftNumber ?? '?'} → См.${item.toShiftNumber}`);
+  }
+  if (item.toEquipment?.name && item.toEquipmentId !== item.fromEquipmentId) {
+    changes.push(`${item.fromEquipment?.name || '—'} → ${item.toEquipment.name}`);
+  }
+  if (item.toGradeNumber !== null && item.toGradeNumber !== item.fromGradeNumber) {
+    changes.push(`${item.fromGradeNumber ?? '?'} разр. → ${item.toGradeNumber} разр.`);
+  }
+  if (item.toPosition && item.toPosition !== item.fromPosition) {
+    changes.push(`${POSITION_MAP[item.fromPosition || ''] || item.fromPosition || '—'} → ${POSITION_MAP[item.toPosition] || item.toPosition}`);
+  }
+  if (item.toProfession && item.toProfession !== item.fromProfession) {
+    changes.push(`${item.fromProfession || '—'} → ${item.toProfession}`);
+  }
+  return changes;
+}
+
 // --- Основной компонент ---
-export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?: (count: number) => void }) {
+export function TransferOrdersView() {
   const { data: session } = useSession();
   const userRole = (session?.user as any)?.role || 'worker';
-  const { toast } = useToast();
 
   const [orders, setOrders] = useState<TransferOrder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -225,21 +293,26 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
   // Данные для формы
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [equipment, setEquipment] = useState<Equipment[]>([]);
+  const [grades, setGrades] = useState<GradeOption[]>([]);
 
   // Диалог создания
   const [showCreate, setShowCreate] = useState(false);
-  const [formOrderType, setFormOrderType] = useState<string>('combined');
+  const [formOrderType, setFormOrderType] = useState<string>('complex');
   const [formShiftNumber, setFormShiftNumber] = useState<string>('');
   const [formReason, setFormReason] = useState('');
   const [formNotes, setFormNotes] = useState('');
-  const [formItems, setFormItems] = useState<{ workerId: string; toEquipmentId: string; toShiftNumber: string; toGradeNumber: string }[]>([
-    { workerId: '', toEquipmentId: '', toShiftNumber: '', toGradeNumber: '' },
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const [formItems, setFormItems] = useState<{
+    workerId: string; toEquipmentId: string; toShiftNumber: string;
+    toGradeNumber: string; toPosition: string; toProfession: string;
+    effectiveDate: string; duration: string;
+  }[]>([
+    { workerId: '', toEquipmentId: '', toShiftNumber: '', toGradeNumber: '', toPosition: '', toProfession: '', effectiveDate: todayStr, duration: 'until_next_order' },
   ]);
-  const [creating, setCreating] = useState(false);
 
   // Диалог просмотра
   const [viewOrder, setViewOrder] = useState<TransferOrder | null>(null);
-  const [actionLoading, setActionLoading] = useState(false);
 
   // Загрузка списков
   const fetchOrders = useCallback(async () => {
@@ -247,34 +320,14 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
     try {
       const params = filterStatus !== 'all' ? `?status=${filterStatus}` : '';
       const res = await fetch(`/api/transfer-orders${params}`);
-      if (!res.ok) throw new Error('Ошибка загрузки');
       const data = await res.json();
       setOrders(data);
-
-      // Обновляем счётчик черновиков для бейджа
-      if (onDraftCountChange) {
-        // Если фильтр не по черновикам — считаем из полученных или делаем отдельный запрос
-        const draftCount = filterStatus === 'all'
-          ? data.filter((o: TransferOrder) => o.status === 'draft').length
-          : filterStatus === 'draft'
-            ? data.length
-            : null; // при других фильтрах делаем отдельный запрос
-        if (draftCount !== null) {
-          onDraftCountChange(draftCount);
-        } else {
-          // Отдельный запрос только для подсчёта черновиков
-          fetch('/api/transfer-orders?count=draft')
-            .then(r => r.json())
-            .then(count => onDraftCountChange(typeof count === 'number' ? count : 0))
-            .catch(() => {});
-        }
-      }
-    } catch (e: any) {
-      toast({ title: 'Ошибка', description: e.message, variant: 'destructive' });
+    } catch (e) {
+      console.error(e);
     } finally {
       setLoading(false);
     }
-  }, [filterStatus, toast, onDraftCountChange]);
+  }, [filterStatus]);
 
   useEffect(() => {
     fetchOrders();
@@ -282,8 +335,9 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
 
   useEffect(() => {
     if (showCreate) {
-      fetch('/api/workers').then(r => r.json()).then(setWorkers).catch(() => {});
+      fetch('/api/workers?isActive=true').then(r => r.json()).then(setWorkers).catch(() => {});
       fetch('/api/equipment').then(r => r.json()).then(setEquipment).catch(() => {});
+      fetch('/api/grades').then(r => r.json()).then(setGrades).catch(() => {});
     }
   }, [showCreate]);
 
@@ -297,139 +351,98 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
   };
 
   const addFormItem = () => {
-    setFormItems(prev => [...prev, { workerId: '', toEquipmentId: '', toShiftNumber: '', toGradeNumber: '' }]);
+    setFormItems(prev => [...prev, { workerId: '', toEquipmentId: '', toShiftNumber: '', toGradeNumber: '', toPosition: '', toProfession: '', effectiveDate: todayStr, duration: 'until_next_order' }]);
   };
 
   const removeFormItem = (index: number) => {
-    if (formItems.length <= 1) return;
     setFormItems(prev => prev.filter((_, i) => i !== index));
   };
 
   // Создание распоряжения
   const handleCreate = async () => {
     const validItems = formItems.filter(i => i.workerId);
-    if (validItems.length === 0) {
-      toast({ title: 'Ошибка', description: 'Выберите хотя бы одного работника', variant: 'destructive' });
-      return;
+    if (validItems.length === 0) return;
+
+    // Автоматически определяем тип распоряжения
+    let hasShift = false, hasEquip = false, hasGrade = false, hasPos = false;
+    for (const item of validItems) {
+      if (item.toShiftNumber) hasShift = true;
+      if (item.toEquipmentId) hasEquip = true;
+      if (item.toGradeNumber) hasGrade = true;
+      if (item.toPosition) hasPos = true;
+    }
+    let orderType = 'complex';
+    const typeCount = [hasShift, hasEquip, hasGrade, hasPos].filter(Boolean).length;
+    if (typeCount === 1) {
+      if (hasEquip) orderType = 'equipment';
+      else if (hasShift) orderType = 'shift';
+      else if (hasGrade) orderType = 'grade';
+      else if (hasPos) orderType = 'position';
+    } else if (typeCount === 2 && hasShift && hasEquip) {
+      orderType = 'both';
     }
 
-    // Проверяем что хоть что-то меняется
-    const hasChanges = validItems.some(i => i.toEquipmentId || i.toShiftNumber || i.toGradeNumber);
-    if (!hasChanges) {
-      toast({ title: 'Ошибка', description: 'Укажите хотя бы одно изменение для каждого работника', variant: 'destructive' });
-      return;
-    }
+    await fetch('/api/transfer-orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orderDate: todayStr,
+        orderType,
+        shiftNumber: formShiftNumber ? parseInt(formShiftNumber) : null,
+        reason: formReason || null,
+        notes: formNotes || null,
+        items: validItems.map(i => ({
+          workerId: i.workerId,
+          toEquipmentId: i.toEquipmentId ? parseInt(i.toEquipmentId) : null,
+          toShiftNumber: i.toShiftNumber ? parseInt(i.toShiftNumber) : null,
+          toGradeNumber: i.toGradeNumber ? parseInt(i.toGradeNumber) : null,
+          toPosition: i.toPosition || null,
+          toProfession: i.toProfession || null,
+          effectiveDate: i.effectiveDate || todayStr,
+          duration: i.duration,
+        })),
+      }),
+    });
 
-    setCreating(true);
-    try {
-      const res = await fetch('/api/transfer-orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orderDate: new Date().toISOString().split('T')[0],
-          orderType: formOrderType,
-          shiftNumber: formShiftNumber ? parseInt(formShiftNumber) : null,
-          reason: formReason || null,
-          notes: formNotes || null,
-          items: validItems.map(i => ({
-            workerId: i.workerId,
-            toEquipmentId: i.toEquipmentId ? parseInt(i.toEquipmentId) : null,
-            toShiftNumber: i.toShiftNumber ? parseInt(i.toShiftNumber) : null,
-            toGradeNumber: i.toGradeNumber ? parseInt(i.toGradeNumber) : null,
-          })),
-        }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Ошибка создания');
-      }
-
-      toast({ title: 'Готово', description: 'Распоряжение создано, работники переведены' });
-      setShowCreate(false);
-      resetForm();
-      fetchOrders();
-    } catch (e: any) {
-      toast({ title: 'Ошибка создания', description: e.message, variant: 'destructive' });
-    } finally {
-      setCreating(false);
-    }
+    setShowCreate(false);
+    resetForm();
+    fetchOrders();
   };
 
   const resetForm = () => {
-    setFormOrderType('combined');
+    setFormOrderType('complex');
     setFormShiftNumber('');
     setFormReason('');
     setFormNotes('');
-    setFormItems([{ workerId: '', toEquipmentId: '', toShiftNumber: '', toGradeNumber: '' }]);
+    setFormItems([{ workerId: '', toEquipmentId: '', toShiftNumber: '', toGradeNumber: '', toPosition: '', toProfession: '', effectiveDate: todayStr, duration: 'until_next_order' }]);
   };
 
   // Утверждение / отмена
   const handleAction = async (orderId: string, action: 'approve' | 'cancel') => {
-    setActionLoading(true);
-    try {
-      const res = await fetch(`/api/transfer-orders/${orderId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Ошибка');
-      }
-
-      toast({
-        title: 'Готово',
-        description: action === 'approve'
-          ? 'Распоряжение утверждено'
-          : 'Распоряжение отменено, работники возвращены',
-      });
-      fetchOrders();
-      setViewOrder(null);
-    } catch (e: any) {
-      toast({ title: 'Ошибка', description: e.message, variant: 'destructive' });
-    } finally {
-      setActionLoading(false);
-    }
+    await fetch(`/api/transfer-orders/${orderId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    fetchOrders();
+    setViewOrder(null);
   };
 
   // Удаление черновика
   const handleDelete = async (orderId: string) => {
-    if (!confirm('Удалить черновик распоряжения? Работники будут возвращены на прежние места.')) return;
-    setActionLoading(true);
-    try {
-      const res = await fetch(`/api/transfer-orders/${orderId}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Ошибка');
-      }
-      toast({ title: 'Удалено', description: 'Черновик удалён, работники возвращены' });
-      fetchOrders();
-      setViewOrder(null);
-    } catch (e: any) {
-      toast({ title: 'Ошибка', description: e.message, variant: 'destructive' });
-    } finally {
-      setActionLoading(false);
-    }
+    await fetch(`/api/transfer-orders/${orderId}`, { method: 'DELETE' });
+    fetchOrders();
+    setViewOrder(null);
   };
 
   const canCreate = userRole === 'admin' || userRole === 'master';
   const canApprove = userRole === 'admin';
 
-  // Форматирование данных "откуда → куда" для строки
-  const formatItemChange = (item: TransferOrderItem) => {
-    const changes: string[] = [];
-    if (item.toGradeNumber !== null && item.toGradeNumber !== undefined) {
-      changes.push(`Разряд: ${item.fromGradeNumber || '?'} → ${item.toGradeNumber}`);
-    }
-    if (item.toShiftNumber !== null && item.toShiftNumber !== undefined) {
-      changes.push(`Смена: ${item.fromShiftNumber || '?'} → ${item.toShiftNumber}`);
-    }
-    if (item.toEquipmentId !== null && item.toEquipmentId !== undefined) {
-      changes.push(`Оборуд.: ${item.fromEquipment?.name || '?'} → ${item.toEquipment?.name || '?'}`);
-    }
-    return changes.join('; ');
+  // Статус строки
+  const getItemStatus = (item: TransferOrderItem) => {
+    if (item.revertedAt) return { label: 'Откат', color: 'bg-gray-100 text-gray-600' };
+    if (item.executed) return { label: 'Исполнено', color: 'bg-green-100 text-green-800' };
+    return { label: 'Ожидает даты', color: 'bg-yellow-50 text-yellow-700' };
   };
 
   return (
@@ -438,7 +451,7 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold">Распоряжения о переводе</h2>
-          <p className="text-sm text-gray-500">Управление переводами работников между сменами, оборудованием и разрядами</p>
+          <p className="text-sm text-gray-500">Управление переводами работников: смена, оборудование, разряд, должность</p>
         </div>
         <div className="flex flex-col sm:flex-row w-full sm:w-auto items-stretch sm:items-center gap-3">
           <Select value={filterStatus} onValueChange={setFilterStatus}>
@@ -475,38 +488,59 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
         <div className="space-y-3">
           {orders.map(order => {
             const statusInfo = STATUS_MAP[order.status] || STATUS_MAP.draft;
-            const isDraft = order.status === 'draft';
+            const effectiveDates = [...new Set(order.items.map(i => i.effectiveDate))].sort();
+            const hasOneShift = order.items.some(i => i.duration === 'one_shift');
+            const pendingCount = order.items.filter(i => !i.executed).length;
             return (
               <Card
                 key={order.id}
-                className={`cursor-pointer hover:shadow-md transition-shadow ${
-                  isDraft ? 'ring-2 ring-yellow-400 bg-yellow-50/30' : ''
-                }`}
+                className="cursor-pointer hover:shadow-md transition-shadow"
                 onClick={() => setViewOrder(order)}
               >
                 <CardContent className="p-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="flex flex-wrap items-center gap-2 sm:gap-4">
-                      <div>
-                        <p className="font-bold text-lg">{order.orderNumber}</p>
-                        <p className="text-sm text-gray-500">от {order.orderDate}</p>
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 sm:gap-4">
+                        <div>
+                          <p className="font-bold text-lg">{order.orderNumber}</p>
+                          <p className="text-sm text-gray-500">от {order.orderDate}</p>
+                        </div>
+                        <Badge className={statusInfo.color}>{statusInfo.label}</Badge>
+                        {pendingCount > 0 && order.status === 'approved' && (
+                          <Badge className="bg-orange-100 text-orange-800 border-orange-300">
+                            {pendingCount} ожидает
+                          </Badge>
+                        )}
+                        {hasOneShift && (
+                          <Badge variant="outline" className="text-xs">1 смена</Badge>
+                        )}
                       </div>
-                      <Badge className={statusInfo.color}>{statusInfo.label}</Badge>
-                      <span className="text-sm text-gray-600 hidden sm:inline">
-                        {ORDER_TYPE_MAP[order.orderType] || order.orderType}
-                      </span>
+                      {/* Фамилии работников */}
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {order.items.map(item => (
+                          <span
+                            key={item.id}
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                              item.revertedAt
+                                ? 'bg-gray-100 text-gray-500 line-through'
+                                : item.executed
+                                  ? 'bg-green-50 text-green-700'
+                                  : 'bg-blue-50 text-blue-700'
+                            }`}
+                          >
+                            {item.worker.lastName} {item.worker.firstName[0]}.{item.worker.patronymic[0]}.
+                          </span>
+                        ))}
+                      </div>
                     </div>
-                    <div className="flex sm:flex-col items-center sm:items-end justify-between sm:text-right gap-2 sm:gap-0">
+                    <div className="flex sm:flex-col items-center sm:items-end justify-between sm:text-right gap-2 sm:gap-0 flex-shrink-0">
                       <p className="text-sm">
                         <span className="text-gray-500">Строк:</span>{' '}
                         <span className="font-semibold">{order.items.length}</span>
                       </p>
-                      {order.shift && (
-                        <p className="text-xs text-gray-500">Смена {order.shift.number}</p>
-                      )}
-                      {isDraft && (
-                        <Badge className="bg-yellow-200 text-yellow-900 text-xs">Ожидает утверждения</Badge>
-                      )}
+                      <p className="text-xs text-gray-500">
+                        С {effectiveDates[0]}{effectiveDates.length > 1 ? ' ...' : ''}
+                      </p>
                     </div>
                   </div>
                 </CardContent>
@@ -518,35 +552,16 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
 
       {/* === Диалог создания распоряжения === */}
       <Dialog open={showCreate} onOpenChange={setShowCreate}>
-        <DialogContent className="w-[calc(100%-2rem)] sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="w-[calc(100%-2rem)] sm:max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Новое распоряжение о переводе</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            {/* Предупреждение о немедленном переводе */}
-            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 flex items-start gap-2">
-              <span className="text-lg leading-none mt-0.5">⚠️</span>
-              <div>
-                <p className="font-medium">Работники переводятся немедленно</p>
-                <p className="text-amber-600 mt-1 text-xs">При создании распоряжения работники будут сразу перемещены на новые смену, оборудование и разряд. Распоряжение создаётся как черновик и ожидает утверждения администратором. При отмене или удалении черновика работники вернутся на прежние места.</p>
-              </div>
-            </div>
-
-            {/* Тип распоряжения */}
+            {/* Основание */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="text-sm font-medium mb-1 block">Тип распоряжения</label>
-                <Select value={formOrderType} onValueChange={setFormOrderType}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="combined">Комплексный перевод</SelectItem>
-                    <SelectItem value="equipment">Только оборудование</SelectItem>
-                    <SelectItem value="shift">Только смена</SelectItem>
-                    <SelectItem value="grade">Только разряд</SelectItem>
-                  </SelectContent>
-                </Select>
+                <label className="text-sm font-medium mb-1 block">Основание</label>
+                <Input value={formReason} onChange={e => setFormReason(e.target.value)} placeholder="Производственная необходимость" />
               </div>
               <div>
                 <label className="text-sm font-medium mb-1 block">Смена (необязательно)</label>
@@ -562,11 +577,6 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
                 </Select>
               </div>
             </div>
-            {/* Основание */}
-            <div>
-              <label className="text-sm font-medium mb-1 block">Основание</label>
-              <Input value={formReason} onChange={e => setFormReason(e.target.value)} placeholder="Производственная необходимость" />
-            </div>
             {/* Строки - работники */}
             <div>
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-2">
@@ -581,6 +591,7 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
                     index={i}
                     workers={workers}
                     equipment={equipment}
+                    grades={grades}
                     onUpdate={updateFormItem}
                     onRemove={removeFormItem}
                   />
@@ -594,13 +605,13 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
             </div>
           </div>
           <DialogFooter className="flex-col sm:flex-row gap-2">
-            <Button variant="outline" onClick={() => { setShowCreate(false); resetForm(); }} className="w-full sm:w-auto" disabled={creating}>Отмена</Button>
+            <Button variant="outline" onClick={() => { setShowCreate(false); resetForm(); }} className="w-full sm:w-auto">Отмена</Button>
             <Button
               onClick={handleCreate}
               className="bg-emerald-600 hover:bg-emerald-700 w-full sm:w-auto"
-              disabled={!formItems.some(i => i.workerId) || creating}
+              disabled={!formItems.some(i => i.workerId)}
             >
-              {creating ? 'Создание...' : 'Создать и перевести'}
+              Создать черновик
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -608,10 +619,9 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
 
       {/* === Диалог просмотра распоряжения === */}
       <Dialog open={!!viewOrder} onOpenChange={() => setViewOrder(null)}>
-        <DialogContent className="w-[calc(100%-2rem)] sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="w-[calc(100%-2rem)] sm:max-w-3xl max-h-[90vh] overflow-y-auto">
           {viewOrder && (() => {
             const statusInfo = STATUS_MAP[viewOrder.status] || STATUS_MAP.draft;
-            const isDraft = viewOrder.status === 'draft';
             return (
               <>
                 <DialogHeader>
@@ -621,26 +631,11 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
                   </DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4 py-2">
-                  {/* Предупреждение для черновика */}
-                  {isDraft && (
-                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 flex items-start gap-2">
-                      <span className="text-lg leading-none mt-0.5">⚠️</span>
-                      <div>
-                        <p className="font-medium">Работники уже переведены</p>
-                        <p className="text-amber-600 mt-1 text-xs">Работники были перемещены при создании этого черновика. Утверждение лишь подтверждает перевод. При отмене или удалении работники вернутся на прежние места.</p>
-                      </div>
-                    </div>
-                  )}
-
                   {/* Реквизиты */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <div>
-                      <span className="text-gray-500">Дата:</span>{' '}
+                      <span className="text-gray-500">Дата распоряжения:</span>{' '}
                       <span className="font-medium">{viewOrder.orderDate}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-500">Тип:</span>{' '}
-                      <span className="font-medium">{ORDER_TYPE_MAP[viewOrder.orderType]}</span>
                     </div>
                     {viewOrder.shift && (
                       <div>
@@ -678,61 +673,70 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
                     </div>
                   )}
 
-                  {/* Мобильные карточки */}
+                  {/* Строки — карточки (мобильные) */}
                   <div className="sm:hidden space-y-2">
-                    {viewOrder.items.map((item, i) => (
-                      <div key={item.id} className="border rounded-lg p-3 bg-gray-50 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium">
-                            {i + 1}. {item.worker.lastName} {item.worker.firstName[0]}.{item.worker.patronymic[0]}.
-                          </span>
-                          {item.executed ? (
-                            <Badge className="bg-green-100 text-green-800 text-xs">Выполнено</Badge>
-                          ) : (
-                            <Badge variant="outline" className="text-xs">Ожидает</Badge>
-                          )}
+                    {viewOrder.items.map((item, i) => {
+                      const itemStatus = getItemStatus(item);
+                      const changes = describeChanges(item);
+                      return (
+                        <div key={item.id} className="border rounded-lg p-3 bg-gray-50 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-medium">
+                              {item.worker.lastName} {item.worker.firstName[0]}.{item.worker.patronymic[0]}.
+                            </span>
+                            <Badge className={`${itemStatus.color} text-xs`}>{itemStatus.label}</Badge>
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            С {item.effectiveDate} · {DURATION_MAP[item.duration] || item.duration}
+                          </div>
+                          <div className="space-y-1">
+                            {changes.map((c, ci) => (
+                              <div key={ci} className="text-sm text-gray-700">{c}</div>
+                            ))}
+                          </div>
                         </div>
-                        <div className="text-xs space-y-1">
-                          {formatItemChange(item) ? (
-                            <p className="text-gray-700">{formatItemChange(item)}</p>
-                          ) : (
-                            <p className="text-gray-400">Нет изменений</p>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
-                  {/* Десктопная таблица */}
+                  {/* Строки — таблица (десктоп) */}
                   <div className="hidden sm:block border rounded-lg overflow-hidden">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="bg-slate-100">
-                          <th className="px-3 py-2 text-center font-medium">№</th>
-                          <th className="px-3 py-2 text-left font-medium">Работник</th>
-                          <th className="px-3 py-2 text-left font-medium">Изменения</th>
-                          <th className="px-3 py-2 text-center font-medium">Статус</th>
+                          <th className="px-2 py-2 text-center font-medium">№</th>
+                          <th className="px-2 py-2 text-left font-medium">Работник</th>
+                          <th className="px-2 py-2 text-left font-medium">Изменения</th>
+                          <th className="px-2 py-2 text-center font-medium">С</th>
+                          <th className="px-2 py-2 text-center font-medium">Срок</th>
+                          <th className="px-2 py-2 text-center font-medium">Статус</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {viewOrder.items.map((item, i) => (
-                          <tr key={item.id} className="border-t">
-                            <td className="px-3 py-2 text-center text-gray-400">{i + 1}</td>
-                            <td className="px-3 py-2 font-medium">
-                              {item.worker.lastName} {item.worker.firstName[0]}.{item.worker.patronymic[0]}.
-                            </td>
-                            <td className="px-3 py-2 text-sm">
-                              {formatItemChange(item) || <span className="text-gray-400">Нет изменений</span>}
-                            </td>
-                            <td className="px-3 py-2 text-center">
-                              {item.executed ? (
-                                <Badge className="bg-green-100 text-green-800 text-xs">Выполнено</Badge>
-                              ) : (
-                                <Badge variant="outline" className="text-xs">Ожидает</Badge>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                        {viewOrder.items.map((item, i) => {
+                          const itemStatus = getItemStatus(item);
+                          const changes = describeChanges(item);
+                          return (
+                            <tr key={item.id} className="border-t">
+                              <td className="px-2 py-2 text-center text-gray-400">{i + 1}</td>
+                              <td className="px-2 py-2 font-medium">
+                                {item.worker.lastName} {item.worker.firstName[0]}.{item.worker.patronymic[0]}.
+                              </td>
+                              <td className="px-2 py-2 text-sm">
+                                {changes.length > 0 ? changes.map((c, ci) => (
+                                  <div key={ci}>{c}</div>
+                                )) : <span className="text-gray-400">—</span>}
+                              </td>
+                              <td className="px-2 py-2 text-center text-xs">{item.effectiveDate}</td>
+                              <td className="px-2 py-2 text-center text-xs">
+                                {item.duration === 'one_shift' ? '1 смена' : 'Постоянно'}
+                              </td>
+                              <td className="px-2 py-2 text-center">
+                                <Badge className={`${itemStatus.color} text-xs`}>{itemStatus.label}</Badge>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -740,18 +744,18 @@ export function TransferOrdersView({ onDraftCountChange }: { onDraftCountChange?
                   {/* Кнопки действий */}
                   <div className="flex flex-wrap items-center gap-2 pt-2">
                     {viewOrder.status === 'draft' && canApprove && (
-                      <Button onClick={() => handleAction(viewOrder.id, 'approve')} className="bg-green-600 hover:bg-green-700 w-full sm:w-auto" disabled={actionLoading}>
-                        {actionLoading ? 'Выполнение...' : '✓ Утвердить'}
+                      <Button onClick={() => handleAction(viewOrder.id, 'approve')} className="bg-green-600 hover:bg-green-700 w-full sm:w-auto">
+                        Утвердить
                       </Button>
                     )}
                     {(viewOrder.status === 'draft' || viewOrder.status === 'approved') && (
-                      <Button variant="outline" onClick={() => handleAction(viewOrder.id, 'cancel')} className="text-red-600 hover:text-red-700 w-full sm:w-auto" disabled={actionLoading}>
-                        ✕ Отменить (вернуть работников)
+                      <Button variant="outline" onClick={() => handleAction(viewOrder.id, 'cancel')} className="text-red-600 hover:text-red-700 w-full sm:w-auto">
+                        Отменить
                       </Button>
                     )}
                     {viewOrder.status === 'draft' && canCreate && (
-                      <Button variant="ghost" onClick={() => handleDelete(viewOrder.id)} className="text-red-400 hover:text-red-600 sm:ml-auto w-full sm:w-auto" disabled={actionLoading}>
-                        🗑 Удалить
+                      <Button variant="ghost" onClick={() => handleDelete(viewOrder.id)} className="text-red-400 hover:text-red-600 sm:ml-auto w-full sm:w-auto">
+                        Удалить
                       </Button>
                     )}
                   </div>

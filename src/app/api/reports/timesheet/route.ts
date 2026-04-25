@@ -29,44 +29,135 @@ export async function GET(request: NextRequest) {
     let workers: any[];
     let attendance: any[];
     let schedule: Map<string, any>;
+    // Даты переводов — доступны для сменовых вкладок
+    let transferOutDates = new Map<string, string>(); // workerId -> effectiveDate (переведён ИЗ этой смены)
+    let transferInDates = new Map<string, string>();   // workerId -> effectiveDate (переведён В эту смену)
 
     if (isLeaders) {
-      // Leaders: non-shift workers (shiftNumber is null)
+      // Вкладка «Руководители»: только несменные работники (shiftNumber = null)
       workers = await db.worker.findMany({
         where: { shiftNumber: null, isActive: true },
         include: { grade: true, equipment: true, professions: true },
         orderBy: { lastName: 'asc' },
       });
 
-      attendance = await db.attendanceRecord.findMany({
-        where: {
-          worker: { shiftNumber: null },
-          date: { gte: startDateStr, lte: endDateStr },
-        },
-      });
+      const leaderWorkerIds = workers.map(w => w.id);
+      attendance = leaderWorkerIds.length > 0
+        ? await db.attendanceRecord.findMany({
+            where: {
+              workerId: { in: leaderWorkerIds },
+              date: { gte: startDateStr, lte: endDateStr },
+            },
+          })
+        : [];
 
-      // Build per-position schedule for leaders
-      schedule = new Map(); // not used for leaders directly
+      schedule = new Map();
     } else {
       const shiftNumber = parseInt(shiftNumberParam || '1');
 
-      workers = await db.worker.findMany({
+      // ========== ПРИНЦИП: работник появляется в табеле смены ТОЛЬКО если: ==========
+      // 1. Он сейчас в этой смене (shiftNumber === shiftNumber), ИЛИ
+      // 2. Он был переведён ИЗ этой смены (есть распоряжение с fromShiftNumber)
+      //    и перевод не откачён — тогда сохраняются его часы до перевода.
+      //
+      // Несменные руководители (shiftNumber = null) НЕ появляются в сменовых
+      // вкладках — для них отдельная вкладка «Руководители».
+      // Работник без распоряжения НЕ появляется в чужой смене.
+
+      // 1. Работники, которые сейчас в этой смене
+      const currentShiftWorkers = await db.worker.findMany({
         where: { shiftNumber, isActive: true },
         include: { grade: true, equipment: true, professions: true },
-        orderBy: { lastName: 'asc' },
       });
 
-      attendance = await db.attendanceRecord.findMany({
+      const currentShiftWorkerIds = new Set(currentShiftWorkers.map(w => w.id));
+
+      // 2. Работники, переведённые ИЗ этой смены (источник истины — распоряжения)
+      //    Только исполненные и не откачённые переводы, по активным распоряжениям.
+      //    Несменные работники (shiftNumber = null на момент запроса) исключаются.
+      const transferOutItems = await db.transferOrderItem.findMany({
         where: {
-          worker: { shiftNumber },
-          date: { gte: startDateStr, lte: endDateStr },
+          fromShiftNumber: shiftNumber,
+          executed: true,
+          revertedAt: null,
+          order: { status: { in: ['draft', 'approved'] } },
         },
+        select: { workerId: true, effectiveDate: true },
       });
+
+      // Убираем дубликаты и тех, кто уже в текущей смене
+      const transferredWorkerIds = [...new Set(transferOutItems.map(i => i.workerId))]
+        .filter(id => !currentShiftWorkerIds.has(id));
+
+      // 3. Подгружаем данные переведённых работников
+      let transferredWorkers: any[] = [];
+      if (transferredWorkerIds.length > 0) {
+        // Фильтруем: только сменные работники (shiftNumber !== null)
+        // Несменные руководители не должны появляться в сменовых вкладках
+        transferredWorkers = await db.worker.findMany({
+          where: {
+            id: { in: transferredWorkerIds },
+            isActive: true,
+            shiftNumber: { not: null },
+          },
+          include: { grade: true, equipment: true, professions: true },
+        });
+      }
+
+      // 4. Объединяем: текущие + переведённые (без дубликатов)
+      const workerMap = new Map<string, any>();
+      for (const w of currentShiftWorkers) workerMap.set(w.id, w);
+      for (const w of transferredWorkers) workerMap.set(w.id, w);
+      workers = Array.from(workerMap.values()).sort((a, b) => a.lastName.localeCompare(b.lastName));
+
+      // 5. Записи посещаемости — только для работников из нашего списка
+      const workerIds = new Set(workers.map(w => w.id));
+      attendance = workerIds.size > 0
+        ? await db.attendanceRecord.findMany({
+            where: {
+              workerId: { in: Array.from(workerIds) },
+              date: { gte: startDateStr, lte: endDateStr },
+            },
+          })
+        : [];
+
+      // 6. Даты переводов — определяем, с какого дня работник в этой смене
+      //    transferOutDates: для переведённых ИЗ (дни ПОСЛЕ этой даты — серые)
+      //    transferInDates: для переведённых В (дни ДО этой даты — серые)
+      transferOutDates = new Map<string, string>(); // workerId -> effectiveDate
+      for (const item of transferOutItems) {
+        if (!currentShiftWorkerIds.has(item.workerId)) {
+          // Работник уже не в этой смене — несколько записей, берём последнюю
+          const existing = transferOutDates.get(item.workerId);
+          if (!existing || item.effectiveDate > existing) {
+            transferOutDates.set(item.workerId, item.effectiveDate);
+          }
+        }
+      }
+
+      transferInDates = new Map<string, string>(); // workerId -> effectiveDate
+      const transferInItems = await db.transferOrderItem.findMany({
+        where: {
+          toShiftNumber: shiftNumber,
+          executed: true,
+          revertedAt: null,
+          effectiveDate: { not: '' },
+          order: { status: { in: ['draft', 'approved'] } },
+        },
+        select: { workerId: true, effectiveDate: true },
+      });
+      for (const item of transferInItems) {
+        // Берём самую раннюю дату перевода в эту смену
+        const existing = transferInDates.get(item.workerId);
+        if (!existing || item.effectiveDate < existing) {
+          transferInDates.set(item.workerId, item.effectiveDate);
+        }
+      }
 
       schedule = getMonthSchedule(shiftNumber, year, month, scheduleStartDate);
     }
 
-    // Build attendance map
+    // Build attendance map: workerId_date_shiftType -> record
     const attendanceMap = new Map<string, any>();
     for (const a of attendance) {
       const key = `${a.workerId}_${a.date}_${a.shiftType}`;
@@ -76,7 +167,7 @@ export async function GET(request: NextRequest) {
     // Working statuses
     const workingStatuses = new Set(['day', 'night', 'present', 'working']);
 
-    // Equipment day presence (for shift workers only)
+    // Equipment day presence (for combination detection, shift workers only)
     const equipmentDayPresence = new Map<string, number>();
     if (!isLeaders) {
       for (const worker of workers) {
@@ -101,14 +192,38 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Build timesheet
-    const timesheet = workers.map(worker => {
-      const days: any[] = [];
-      let totalHours = 0;
-      let totalNightHours = 0;
-      let totalHolidayHours = 0;
-      let totalCombinationHours = 0;
-      let hasCombination = false;
+    // ========== MULTI-ROW TIMESHEET ==========
+    // One row per (worker, gradeNumber, position) combination.
+    // Days where the worker was in a DIFFERENT row are marked isOtherRow = true.
+    // Transferred workers (now in a different shift) keep their hours from this shift.
+
+    // 1. Collect all (gradeNumber, position) periods per worker
+    const workerPeriods = new Map<string, Set<string>>();
+    for (const worker of workers) {
+      const periods = new Set<string>();
+      // Current period
+      periods.add(`${worker.gradeNumber}_${worker.position || 'worker'}`);
+      // Periods from attendance records
+      for (const a of attendance) {
+        if (a.workerId === worker.id) {
+          const g = a.gradeNumber || worker.gradeNumber;
+          const p = a.position || worker.position || 'worker';
+          periods.add(`${g}_${p}`);
+        }
+      }
+      workerPeriods.set(worker.id, periods);
+    }
+
+    // 2. Build timesheet rows
+    const timesheet: any[] = [];
+    // Track which workers are transferred (not currently in this shift)
+    const shiftNum = isLeaders ? 0 : parseInt(shiftNumberParam || '1');
+
+    for (const worker of workers) {
+      const periods = workerPeriods.get(worker.id)!;
+      const periodArr = Array.from(periods).sort();
+      const hasMultipleRows = periodArr.length > 1;
+      const isTransferred = !isLeaders && worker.shiftNumber !== shiftNum;
 
       // For leaders, get their personal non-shift schedule
       let leaderSchedule: Map<string, any> | null = null;
@@ -116,88 +231,162 @@ export async function GET(request: NextRequest) {
         leaderSchedule = getNonShiftSchedule(worker.position, year, month);
       }
 
-      for (let day = 1; day <= daysInMonth; day++) {
-        const dateStr = `${monthStr}-${String(day).padStart(2, '0')}`;
-        const date = new Date(year, month - 1, day);
-        const isHoliday = holidaySet.has(dateStr);
+      for (const periodKey of periodArr) {
+        const [gradeStr, position] = periodKey.split('_');
+        const gradeNumber = parseInt(gradeStr);
 
-        let phase: string;
-        let shiftType: string | null;
+        const days: any[] = [];
+        let totalHours = 0;
+        let totalNightHours = 0;
+        let totalHolidayHours = 0;
+        let totalCombinationHours = 0;
+        let hasCombination = false;
 
-        if (isLeaders && leaderSchedule) {
-          // Non-shift: working or day_off
-          const daySchedule = leaderSchedule.get(dateStr);
-          phase = daySchedule === 'working' ? 'working' : 'off';
-          shiftType = daySchedule === 'working' ? 'day' : null;
-        } else {
-          phase = schedule.get(dateStr) || 'off';
-          shiftType = phase === 'day' ? 'day' : phase === 'night' ? 'night' : null;
-        }
+        for (let day = 1; day <= daysInMonth; day++) {
+          const dateStr = `${monthStr}-${String(day).padStart(2, '0')}`;
+          const date = new Date(year, month - 1, day);
+          const isHoliday = holidaySet.has(dateStr);
 
-        let attendanceRecord = null;
-        if (shiftType) {
-          attendanceRecord = attendanceMap.get(`${worker.id}_${dateStr}_${shiftType}`);
-        }
+          let phase: string;
+          let shiftType: string | null;
 
-        let status: string = phase;
-        if (attendanceRecord) {
-          status = attendanceRecord.status;
-        }
-
-        const workerIsWorking = workingStatuses.has(status);
-
-        // Combination (shift workers only)
-        let isCombinationDay = false;
-        if (!isLeaders && worker.equipmentId && shiftType && workerIsWorking) {
-          const presenceKey = `${worker.equipmentId}_${dateStr}`;
-          const presentCount = equipmentDayPresence.get(presenceKey) || 0;
-          if (presentCount === 1) {
-            isCombinationDay = true;
+          if (isLeaders && leaderSchedule) {
+            const daySchedule = leaderSchedule.get(dateStr);
+            phase = daySchedule === 'working' ? 'working' : 'off';
+            shiftType = daySchedule === 'working' ? 'day' : null;
+          } else {
+            phase = schedule.get(dateStr) || 'off';
+            shiftType = phase === 'day' ? 'day' : phase === 'night' ? 'night' : null;
           }
-        }
 
-        if (isCombinationDay) hasCombination = true;
-
-        // Hours from attendance records only
-        if (attendanceRecord && workerIsWorking) {
-          totalHours += attendanceRecord.hoursWorked || 0;
-          totalNightHours += attendanceRecord.nightHours || 0;
-          totalHolidayHours += attendanceRecord.holidayHours || 0;
-          if (isCombinationDay) {
-            totalCombinationHours += attendanceRecord.hoursWorked || 0;
+          let attendanceRecord = null;
+          if (shiftType) {
+            attendanceRecord = attendanceMap.get(`${worker.id}_${dateStr}_${shiftType}`);
           }
+
+          // Определяем дату перевода для этого работника
+          const transferOutDate = transferOutDates.get(worker.id); // дата ухода из этой смены
+          const transferInDate = transferInDates.get(worker.id);   // дата прихода в эту смену
+
+          // Переведён ИЗ этой смены: дни после даты перевода — серые
+          // (работник уже в другой смене, часы сохранены до даты перевода)
+          let isTransferredDay = false;
+          if (isTransferred) {
+            if (transferOutDate) {
+              // Есть точная дата — серые ячейки строго после неё
+              if (dateStr > transferOutDate) {
+                isTransferredDay = true;
+              }
+            } else if (!attendanceRecord) {
+              // Нет даты и нет записи — на всякий случай серое
+              isTransferredDay = true;
+            }
+          }
+
+          // Переведён В эту смену: дни до даты перевода — серые
+          // (работник ещё не был в этой смене, удобный визуальный контроль)
+          let isBeforeTransferIn = false;
+          if (!isLeaders && transferInDate && dateStr < transferInDate) {
+            // Работник переведён в эту смену, но в этот день он был в другой
+            isBeforeTransferIn = true;
+          }
+
+          let status: string = phase;
+          if (attendanceRecord) {
+            status = attendanceRecord.status;
+          } else if (isTransferredDay || isBeforeTransferIn) {
+            status = 'off';
+          }
+
+          // Determine if this day belongs to THIS row or another row
+          let isOtherRow = false;
+          if (hasMultipleRows) {
+            if (attendanceRecord) {
+              const recordGrade = attendanceRecord.gradeNumber || 0;
+              const recordPosition = attendanceRecord.position || 'worker';
+              if (recordGrade !== gradeNumber || recordPosition !== position) {
+                isOtherRow = true;
+              }
+            } else {
+              const isCurrentPeriod = (gradeNumber === worker.gradeNumber && position === (worker.position || 'worker'));
+              if (!isCurrentPeriod) {
+                isOtherRow = true;
+              }
+            }
+          }
+
+          const isInactiveDay = isOtherRow || isTransferredDay || isBeforeTransferIn;
+          const workerIsWorking = !isInactiveDay && workingStatuses.has(status);
+
+          // Combination (shift workers only)
+          let isCombinationDay = false;
+          if (!isLeaders && !isInactiveDay && worker.equipmentId && shiftType && workerIsWorking) {
+            const presenceKey = `${worker.equipmentId}_${dateStr}`;
+            const presentCount = equipmentDayPresence.get(presenceKey) || 0;
+            if (presentCount === 1) {
+              isCombinationDay = true;
+            }
+          }
+
+          if (isCombinationDay) hasCombination = true;
+
+          // Hours from attendance records only, for this row's days
+          if (!isInactiveDay && attendanceRecord && workerIsWorking) {
+            totalHours += attendanceRecord.hoursWorked || 0;
+            totalNightHours += attendanceRecord.nightHours || 0;
+            totalHolidayHours += attendanceRecord.holidayHours || 0;
+            if (isCombinationDay) {
+              totalCombinationHours += attendanceRecord.hoursWorked || 0;
+            }
+          }
+
+          days.push({
+            day,
+            date: dateStr,
+            phase,
+            shiftType,
+            status,
+            isHoliday,
+            isCombination: isCombinationDay,
+            isOtherRow,
+            isTransferredDay,
+            isBeforeTransferIn,
+            attendanceRecord,
+          });
         }
 
-        days.push({
-          day,
-          date: dateStr,
-          phase,
-          shiftType,
-          status,
-          isHoliday,
-          isCombination: isCombinationDay,
-          attendanceRecord,
+        timesheet.push({
+          workerId: worker.id,
+          lastName: worker.lastName,
+          firstName: worker.firstName,
+          patronymic: worker.patronymic,
+          gradeNumber,
+          position: position || 'worker',
+          equipment: worker.equipment?.name || '',
+          professions: worker.professions?.map((p: any) => p.professionName) || [],
+          isCombination: hasCombination,
+          isNonShift: isLeaders,
+          isSubRow: hasMultipleRows,
+          isTransferred: isTransferred ? worker.shiftNumber : false,
+          days,
+          totalHours,
+          totalNightHours,
+          totalHolidayHours,
+          totalCombinationHours,
         });
       }
+    }
 
-      return {
-        workerId: worker.id,
-        lastName: worker.lastName,
-        firstName: worker.firstName,
-        patronymic: worker.patronymic,
-        gradeNumber: worker.gradeNumber,
-        position: worker.position || 'worker',
-        equipment: worker.equipment?.name || '',
-        professions: worker.professions?.map((p: any) => p.professionName) || [],
-        isCombination: hasCombination,
-        isNonShift: isLeaders,
-        days,
-        totalHours,
-        totalNightHours,
-        totalHolidayHours,
-        totalCombinationHours,
-      };
-    });
+    // 3. Compute totals per worker (sum across all rows)
+    const workerTotals = new Map<string, { hours: number; night: number; holiday: number; combination: number }>();
+    for (const row of timesheet) {
+      const existing = workerTotals.get(row.workerId) || { hours: 0, night: 0, holiday: 0, combination: 0 };
+      existing.hours += row.totalHours;
+      existing.night += row.totalNightHours;
+      existing.holiday += row.totalHolidayHours;
+      existing.combination += row.totalCombinationHours;
+      workerTotals.set(row.workerId, existing);
+    }
 
     return NextResponse.json({
       year,
@@ -206,6 +395,7 @@ export async function GET(request: NextRequest) {
       daysInMonth,
       isLeaders,
       timesheet,
+      workerTotals: Object.fromEntries(workerTotals),
     });
   } catch (error) {
     console.error('Error generating timesheet:', error);

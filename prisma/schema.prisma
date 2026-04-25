@@ -113,6 +113,9 @@ model AttendanceRecord {
   hoursWorked     Float         @default(12)
   nightHours      Float         @default(0)
   holidayHours    Float         @default(0)
+  // Привязка к разряду/должности на момент отметки (для многострочного табеля)
+  gradeNumber     Int           @default(0)
+  position        String        @default("worker")
   auditLogs       AuditLog[]    @relation("AttendanceAuditLogs")
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -160,13 +163,30 @@ model TransferOrderItem {
   order           TransferOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
   workerId        String
   worker          Worker        @relation(fields: [workerId], references: [id])
+  // Оборудование
   fromEquipmentId Int?
   fromEquipment   Equipment?    @relation("FromEquipment", fields: [fromEquipmentId], references: [id])
   toEquipmentId   Int?
   toEquipment     Equipment?    @relation("ToEquipment", fields: [toEquipmentId], references: [id])
+  // Смена
   fromShiftNumber Int?
   toShiftNumber   Int?
-  executed        Boolean       @default(false)  // выполнен ли перенос в карточке работника
+  // Разряд
+  fromGradeNumber Int?
+  toGradeNumber   Int?
+  // Должность
+  fromPosition    String?
+  toPosition      String?
+  // Профессия
+  fromProfession  String?
+  toProfession    String?
+  // Дата и срок
+  effectiveDate   String        // дата вступления в силу "2026-04-28"
+  duration        String        @default("until_next_order") // "one_shift" | "until_next_order"
+  // Исполнение
+  executed        Boolean       @default(false)
+  executedAt      DateTime?
+  revertedAt      DateTime?
   createdAt       DateTime      @default(now())
 }
 

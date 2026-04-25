@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { calculateNightHours, isNonShiftPosition } from '@/lib/shift-utils';
+import { calculateNightHours } from '@/lib/shift-utils';
 import { getAuditUser } from '@/lib/auth-guard';
 
 export async function POST(request: NextRequest) {
@@ -14,6 +14,9 @@ export async function POST(request: NextRequest) {
 
     const results = [];
 
+    // Get audit user once before the loop
+    const { userId, userName } = await getAuditUser();
+
     for (const rec of records) {
       const { workerId, date, shiftType, status, absenceReason, notes } = rec;
 
@@ -23,11 +26,6 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      // Get worker to determine position (for hours calculation)
-      const worker = await db.worker.findUnique({ where: { id: workerId }, select: { position: true } });
-      const position = worker?.position || 'worker';
-      const isNonShift = isNonShiftPosition(position);
-
       // Check holiday
       const holiday = await db.holiday.findUnique({ where: { date } });
 
@@ -36,10 +34,22 @@ export async function POST(request: NextRequest) {
       let holidayHours = 0;
 
       if (status === 'present') {
-        hoursWorked = isNonShift ? 8 : 12;
-        nightHours = isNonShift ? 0 : calculateNightHours(shiftType);
-        if (holiday) holidayHours = isNonShift ? 8 : 12;
+        hoursWorked = 12;
+        nightHours = calculateNightHours(shiftType);
+        if (holiday) holidayHours = 12;
       }
+
+      // Get worker's current grade/position for multi-row timesheet
+      let currentGradeNumber = 0;
+      let currentPosition = 'worker';
+      try {
+        const workerData = await db.worker.findUnique({
+          where: { id: workerId },
+          select: { gradeNumber: true, position: true },
+        });
+        currentGradeNumber = workerData?.gradeNumber ?? 0;
+        currentPosition = workerData?.position ?? 'worker';
+      } catch {}
 
       try {
         const record = await db.attendanceRecord.upsert({
@@ -56,6 +66,8 @@ export async function POST(request: NextRequest) {
             hoursWorked,
             nightHours,
             holidayHours,
+            gradeNumber: currentGradeNumber,
+            position: currentPosition,
           },
           update: {
             status,
@@ -64,12 +76,13 @@ export async function POST(request: NextRequest) {
             hoursWorked,
             nightHours,
             holidayHours,
+            gradeNumber: currentGradeNumber,
+            position: currentPosition,
           },
           include: { worker: true },
         });
 
-        // Audit log
-        const { userId, userName } = await getAuditUser();
+        // Audit log (userId/userName already fetched before loop)
         await db.auditLog.create({
           data: {
             userId,

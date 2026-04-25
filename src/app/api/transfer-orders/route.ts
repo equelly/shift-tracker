@@ -3,21 +3,11 @@ import { db } from '@/lib/db';
 import { getAuditUser } from '@/lib/auth-guard';
 
 // GET /api/transfer-orders — список распоряжений
-// ?count=draft — только количество черновиков (для бейджа)
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
     const shiftNumber = searchParams.get('shiftNumber');
-    const countOnly = searchParams.get('count');
-
-    // Специальный режим: вернуть только число черновиков
-    if (countOnly === 'draft') {
-      const draftCount = await db.transferOrder.count({
-        where: { status: 'draft' },
-      });
-      return NextResponse.json(draftCount);
-    }
 
     const where: any = {};
     if (status) where.status = status;
@@ -32,7 +22,7 @@ export async function GET(request: NextRequest) {
         items: {
           include: {
             worker: {
-              include: { grade: true, shift: true },
+              include: { grade: true, shift: true, professions: true },
             },
             fromEquipment: true,
             toEquipment: true,
@@ -50,15 +40,11 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/transfer-orders — создать распоряжение (с немедленным переводом работников)
+// POST /api/transfer-orders — создать распоряжение
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { orderDate, orderType, shiftNumber, reason, notes, items } = body;
-
-    if (!items || items.length === 0) {
-      return NextResponse.json({ error: 'Добавьте хотя бы одного работника' }, { status: 400 });
-    }
 
     // Генерируем номер распоряжения: Р-0001, Р-0002, ...
     const lastOrder = await db.transferOrder.findFirst({
@@ -75,64 +61,48 @@ export async function POST(request: NextRequest) {
 
     const { userId, userName } = await getAuditUser();
 
-    // Для каждого работника: сохраняем текущие данные (откуда) и НЕМЕДЛЕННО переводим
-    const enrichedItems = [];
-    for (const item of items) {
-      const worker = await db.worker.findUnique({
-        where: { id: item.workerId },
-        select: { equipmentId: true, shiftNumber: true, gradeNumber: true },
-      });
+    // Получаем текущие данные работников для заполнения "откуда"
+    const workerIds = (items as any[]).map((i: any) => i.workerId);
+    const workersData = await db.worker.findMany({
+      where: { id: { in: workerIds } },
+      include: { professions: true },
+    });
+    const workerMap = new Map(workersData.map(w => [w.id, w]));
 
-      if (!worker) {
-        return NextResponse.json(
-          { error: `Работник с ID ${item.workerId} не найден` },
-          { status: 400 }
-        );
-      }
-
-      enrichedItems.push({
-        workerId: item.workerId,
-        fromEquipmentId: worker.equipmentId,
-        toEquipmentId: item.toEquipmentId ?? null,
-        fromShiftNumber: worker.shiftNumber,
-        toShiftNumber: item.toShiftNumber ?? null,
-        fromGradeNumber: worker.gradeNumber,
-        toGradeNumber: item.toGradeNumber ?? null,
-      });
-
-      // НЕМЕДЛЕННЫЙ ПЕРЕВОД работника
-      const updateData: any = {};
-      if (item.toEquipmentId !== null && item.toEquipmentId !== undefined) {
-        updateData.equipmentId = item.toEquipmentId;
-      }
-      if (item.toShiftNumber !== null && item.toShiftNumber !== undefined) {
-        updateData.shiftNumber = item.toShiftNumber;
-      }
-      if (item.toGradeNumber !== null && item.toGradeNumber !== undefined) {
-        updateData.gradeNumber = item.toGradeNumber;
-      }
-
-      if (Object.keys(updateData).length > 0) {
-        await db.worker.update({
-          where: { id: item.workerId },
-          data: updateData,
-        });
-      }
-    }
-
-    // Создаём распоряжение со строками (статус = draft)
+    // Создаём распоряжение со строками, автоматически заполняя "откуда"
     const order = await db.transferOrder.create({
       data: {
         orderNumber,
         orderDate,
         orderType,
         shiftNumber: shiftNumber ?? null,
-        reason: reason || null,
-        notes: notes || null,
-        status: 'draft',
+        reason,
+        notes,
         createdBy: userId,
         items: {
-          create: enrichedItems,
+          create: (items as any[]).map(item => {
+            const w = workerMap.get(item.workerId);
+            // Текущая профессия (первая из списка)
+            const currentProfession = w?.professions?.[0]?.professionName || null;
+            return {
+              workerId: item.workerId,
+              // Откуда — автоматически из текущих данных работника
+              fromEquipmentId: w?.equipmentId ?? null,
+              fromShiftNumber: w?.shiftNumber ?? null,
+              fromGradeNumber: w?.gradeNumber ?? null,
+              fromPosition: w?.position ?? null,
+              fromProfession: currentProfession,
+              // Куда — из формы
+              toEquipmentId: item.toEquipmentId ?? null,
+              toShiftNumber: item.toShiftNumber ?? null,
+              toGradeNumber: item.toGradeNumber ?? null,
+              toPosition: item.toPosition ?? null,
+              toProfession: item.toProfession ?? null,
+              // Дата и срок
+              effectiveDate: item.effectiveDate || orderDate,
+              duration: item.duration || 'until_next_order',
+            };
+          }),
         },
       },
       include: {
@@ -140,7 +110,7 @@ export async function POST(request: NextRequest) {
         creator: { select: { name: true } },
         items: {
           include: {
-            worker: { include: { grade: true, shift: true } },
+            worker: { include: { grade: true, shift: true, professions: true } },
             fromEquipment: true,
             toEquipment: true,
           },
@@ -156,17 +126,14 @@ export async function POST(request: NextRequest) {
         action: 'create',
         entityType: 'transfer_order',
         entityId: order.id,
-        description: `Создано распоряжение ${orderNumber} от ${orderDate} (${order.items.length} строк) — работники переведены немедленно`,
+        description: `Создано распоряжение ${orderNumber} от ${orderDate} (${order.items.length} строк)`,
         newValues: JSON.stringify(body),
       },
     });
 
     return NextResponse.json(order, { status: 201 });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error creating transfer order:', error);
-    return NextResponse.json(
-      { error: 'Ошибка создания распоряжения: ' + (error.message || String(error)) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to create transfer order' }, { status: 500 });
   }
 }
