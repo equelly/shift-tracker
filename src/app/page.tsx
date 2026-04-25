@@ -1,9 +1,8 @@
 'use client';
 
 import { SessionProvider, useSession, signOut } from 'next-auth/react';
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { LoginForm } from '@/components/auth/login-form';
-import { ChangePasswordDialog } from '@/components/auth/change-password-dialog';
 import { DashboardView } from '@/components/dashboard/dashboard-view';
 import { TimesheetView } from '@/components/timesheet/timesheet-view';
 import { WorkersView } from '@/components/workers/workers-view';
@@ -13,6 +12,7 @@ import { ReportsView } from '@/components/reports/reports-view';
 import { ReferencesView } from '@/components/references/references-view';
 import { AuditLogView } from '@/components/audit-log/audit-log-view';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 
 type TabId = 'dashboard' | 'timesheet' | 'workers' | 'equipment' | 'transfer-orders' | 'reports' | 'references' | 'audit';
 
@@ -31,17 +31,35 @@ function AppContent() {
   const { data: session, status } = useSession();
   const [activeTab, setActiveTab] = useState<TabId>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [draftCount, setDraftCount] = useState(0);
+  const [pendingOrdersCount, setPendingOrdersCount] = useState(0);
 
-  // Смена пароля
-  const [showChangePassword, setShowChangePassword] = useState(false);
-  const [forcedChangeDone, setForcedChangeDone] = useState(false);
+  const fetchPendingCount = useCallback(async () => {
+    try {
+      const res = await fetch('/api/transfer-orders/count');
+      if (res.ok) {
+        const data = await res.json();
+        setPendingOrdersCount(data.pendingCount ?? 0);
+      }
+    } catch {
+      // silently ignore — badge will show last known value
+    }
+  }, []);
 
-  // Определяем, нужен ли принудительный сброс пароля
-  const needForceChange = session?.user && (session.user as any)?.mustChangePassword && !forcedChangeDone;
+  useEffect(() => {
+    if (status !== 'authenticated') return;
+    fetchPendingCount();
+    const interval = setInterval(fetchPendingCount, 60_000);
+    const onFocus = () => fetchPendingCount();
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(interval); window.removeEventListener('focus', onFocus); };
+  }, [status, fetchPendingCount]);
 
-  const isChangePasswordOpen = showChangePassword || !!needForceChange;
-  const isMustChange = needForceChange ? true : false;
+  const handleTabChange = useCallback((tabId: TabId) => {
+    setActiveTab(tabId);
+    if (tabId === 'transfer-orders') {
+      setTimeout(fetchPendingCount, 500);
+    }
+  }, [fetchPendingCount]);
 
   if (status === 'loading') {
     return (
@@ -61,8 +79,8 @@ function AppContent() {
   const userRole = (session.user as any)?.role || 'worker';
   const visibleTabs = TABS.filter(tab => tab.roles.includes(userRole));
 
-  const roleLabel = userRole === 'admin' ? 'Администратор' :
-                    userRole === 'master' ? 'Мастер' :
+  const roleLabel = userRole === 'admin' ? 'Администратор' : 
+                    userRole === 'master' ? 'Мастер' : 
                     userRole === 'brigadier' ? 'Бригадир' : 'Работник';
 
   return (
@@ -86,19 +104,8 @@ function AppContent() {
               <p className="text-sm font-medium">{session.user?.name}</p>
               <p className="text-xs text-slate-400">{roleLabel}</p>
             </div>
+            {/* Mobile: show role badge */}
             <span className="md:hidden text-xs bg-slate-700 px-2 py-1 rounded">{roleLabel}</span>
-
-            {/* Кнопка смены пароля */}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowChangePassword(true)}
-              className="bg-slate-700 border-slate-600 text-white hover:bg-slate-600 text-xs sm:text-sm"
-              title="Сменить пароль"
-            >
-              🔑
-            </Button>
-
             <Button
               variant="outline"
               size="sm"
@@ -119,7 +126,7 @@ function AppContent() {
             {visibleTabs.map(tab => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => handleTabChange(tab.id)}
                 className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all ${
                   activeTab === tab.id
                     ? 'bg-emerald-600 text-white shadow-md'
@@ -128,10 +135,10 @@ function AppContent() {
               >
                 <span className="mr-1">{tab.icon}</span>
                 {tab.label}
-                {tab.id === 'transfer-orders' && draftCount > 0 && (
-                  <span className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold animate-pulse">
-                    {draftCount}
-                  </span>
+                {tab.id === 'transfer-orders' && pendingOrdersCount > 0 && (
+                  <Badge className="ml-2 bg-red-500 text-white border-0 hover:bg-red-600 text-[10px] min-w-[20px] h-5 px-1.5">
+                    {pendingOrdersCount}
+                  </Badge>
                 )}
               </button>
             ))}
@@ -139,7 +146,7 @@ function AppContent() {
         </div>
       </nav>
 
-      {/* Mobile Tab Navigation */}
+      {/* Mobile Tab Navigation - hamburger + dropdown */}
       <div className="md:hidden bg-white border-b shadow-sm">
         <div className="flex items-center justify-between px-3 py-2">
           <button
@@ -157,19 +164,18 @@ function AppContent() {
             {visibleTabs.map(tab => (
               <button
                 key={tab.id}
-                onClick={() => { setActiveTab(tab.id); setMobileMenuOpen(false); }}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                onClick={() => { handleTabChange(tab.id); setMobileMenuOpen(false); }}
+                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-all flex items-center justify-between ${
                   activeTab === tab.id
                     ? 'bg-emerald-600 text-white'
                     : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                <span className="mr-2">{tab.icon}</span>
-                {tab.label}
-                {tab.id === 'transfer-orders' && draftCount > 0 && (
-                  <span className="ml-2 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold animate-pulse">
-                    {draftCount}
-                  </span>
+                <span><span className="mr-2">{tab.icon}</span>{tab.label}</span>
+                {tab.id === 'transfer-orders' && pendingOrdersCount > 0 && (
+                  <Badge className="bg-red-500 text-white border-0 hover:bg-red-600 text-[10px] min-w-[20px] h-5 px-1.5">
+                    {pendingOrdersCount}
+                  </Badge>
                 )}
               </button>
             ))}
@@ -177,20 +183,25 @@ function AppContent() {
         )}
       </div>
 
-      {/* Mobile horizontal tabs */}
+      {/* Mobile: horizontal scrollable tabs (alternative quick access) */}
       <div className="md:hidden bg-white border-b overflow-x-auto">
         <div className="flex gap-1 px-2 py-1 min-w-max">
           {visibleTabs.map(tab => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-all ${
+              onClick={() => handleTabChange(tab.id)}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-all relative ${
                 activeTab === tab.id
                   ? 'bg-emerald-600 text-white'
                   : 'text-gray-500 hover:bg-gray-100'
               }`}
             >
               {tab.icon}
+              {tab.id === 'transfer-orders' && pendingOrdersCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full min-w-[16px] h-4 flex items-center justify-center px-1">
+                  {pendingOrdersCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -202,7 +213,7 @@ function AppContent() {
         {activeTab === 'timesheet' && <TimesheetView />}
         {activeTab === 'workers' && <WorkersView />}
         {activeTab === 'equipment' && <EquipmentView />}
-        {activeTab === 'transfer-orders' && <TransferOrdersView onDraftCountChange={setDraftCount} />}
+        {activeTab === 'transfer-orders' && <TransferOrdersView />}
         {activeTab === 'reports' && <ReportsView />}
         {activeTab === 'references' && <ReferencesView />}
         {activeTab === 'audit' && <AuditLogView />}
@@ -212,18 +223,6 @@ function AppContent() {
       <footer className="bg-slate-900 text-slate-400 text-center py-2 sm:py-3 text-[10px] sm:text-xs">
         Система учёта рабочего времени © 2026
       </footer>
-
-      {/* Диалог смены пароля */}
-      <ChangePasswordDialog
-        open={isChangePasswordOpen}
-        onOpenChange={(open) => {
-          setShowChangePassword(open);
-          if (!open) {
-            setForcedChangeDone(true);
-          }
-        }}
-        mustChange={isMustChange}
-      />
     </div>
   );
 }
